@@ -1,0 +1,382 @@
+"""Nghiệp vụ lịch hẹn: báo giá, chặn trùng, máy trạng thái (docs 05_quy_trinh.md).
+
+Mọi thay đổi Booking đi qua module này. Lớp AI (Pha 2) không được import các hàm ghi ở đây.
+"""
+from datetime import datetime, timedelta
+from decimal import Decimal
+
+from django.db import transaction
+from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
+from accounts.errors import Conflict
+from accounts.models import Role, User
+from catalog.models import Package, PackagePrice, Service, ServicePrice
+from notifications.models import notify
+from spa.models import Resource, Spa, StaffProfile, TimeOff
+
+from .models import ACTIVE_STATUSES, Booking, BookingItem, BookingStatus, BookingStatusLog
+
+# Bảng chuyển trạng thái hợp lệ (Từ -> các Đến)
+TRANSITIONS = {
+    BookingStatus.PENDING: {BookingStatus.CONFIRMED, BookingStatus.CANCELLED},
+    BookingStatus.CONFIRMED: {BookingStatus.CHECKED_IN, BookingStatus.CANCELLED},
+    BookingStatus.CHECKED_IN: {BookingStatus.IN_PROGRESS},
+    BookingStatus.IN_PROGRESS: {BookingStatus.COMPLETED},
+    BookingStatus.COMPLETED: set(),
+    BookingStatus.CANCELLED: set(),
+}
+
+FRONT_DESK = (Role.RECEPTIONIST, Role.MANAGER)
+
+
+def _front_desk_users():
+    return list(User.objects.filter(role__in=FRONT_DESK, is_active=True))
+
+
+# ---------------------------------------------------------------- báo giá và chặn trùng
+
+def build_items(pet, package_id, service_ids, start_at):
+    """Dựng các dòng dịch vụ tuần tự và giá chốt theo size của thú."""
+    if bool(package_id) == bool(service_ids):
+        raise ValidationError({'package': 'Chọn một gói hoặc danh sách dịch vụ lẻ (không chọn cả hai).'})
+    if not pet.size_class:
+        raise ValidationError({'pet': 'Thú chưa có size (cần cân nặng hợp lệ) nên chưa báo giá được.'})
+
+    package = None
+    if package_id:
+        package = Package.objects.filter(pk=package_id, is_active=True).first()
+        if not package:
+            raise ValidationError({'package': 'Gói không tồn tại hoặc đã ngừng.'})
+        if package.species_scope not in ('both', pet.species):
+            raise ValidationError({'package': 'Gói này không áp dụng cho loài của thú.'})
+        services = [i.service for i in package.items.select_related('service')]
+    else:
+        found = {s.pk: s for s in Service.objects.filter(pk__in=service_ids, is_active=True)}
+        missing = [i for i in service_ids if i not in found]
+        if missing:
+            raise ValidationError({'services': 'Có dịch vụ không tồn tại hoặc đã ngừng.'})
+        services = [found[i] for i in service_ids]
+    if not services:
+        raise ValidationError({'package': 'Gói chưa có dịch vụ nào.'})
+    for s in services:
+        if s.species_scope not in ('both', pet.species):
+            raise ValidationError({'services': f'Dịch vụ "{s.name}" không áp dụng cho loài của thú.'})
+
+    prices = {}
+    for s in services:
+        p = ServicePrice.objects.filter(service=s, size_class=pet.size_class).first()
+        if not p:
+            raise ValidationError({'services': f'Dịch vụ "{s.name}" chưa có giá cho size {pet.size_class}.'})
+        prices[s.pk] = p.price
+
+    unit = dict(prices)
+    if package:
+        pp = PackagePrice.objects.filter(package=package, size_class=pet.size_class).first()
+        if not pp:
+            raise ValidationError({'package': f'Gói chưa có giá cho size {pet.size_class}.'})
+        base = sum(prices.values()) or Decimal(1)
+        running = Decimal(0)
+        for s in services[:-1]:
+            unit[s.pk] = (pp.price * prices[s.pk] / base).quantize(Decimal(1))
+            running += unit[s.pk]
+        unit[services[-1].pk] = pp.price - running
+
+    items, cursor = [], start_at
+    for pos, s in enumerate(services):
+        end = cursor + timedelta(minutes=s.duration_minutes)
+        items.append(dict(service=s, position=pos, start_at=cursor, end_at=end,
+                          resource_type=s.resource_type, unit_price=unit[s.pk]))
+        cursor = end
+    return package, items, sum(i['unit_price'] for i in items), cursor
+
+
+def vaccination_warnings(pet):
+    if not pet.vaccinations.exists():
+        return [{'severity': 'warn', 'code': 'no_vaccination',
+                 'detail': f'{pet.name} chưa có ghi nhận tiêm phòng. Cần xác nhận trước khi nhận thú.'}]
+    return []
+
+
+def specialty_warnings(items, staff):
+    if not staff:
+        return []
+    have = set(staff.specialties.values_list('id', flat=True))
+    need = {i['service'].required_specialty_id for i in items if i['service'].required_specialty_id}
+    if need - have:
+        return [{'severity': 'warn', 'code': 'staff_specialty',
+                 'detail': f'{staff} chưa có đủ chuyên môn cho mọi dịch vụ trong lịch.'}]
+    return []
+
+
+def check_slot(spa, pet, items, start_at, end_at, staff=None, exclude_id=None):
+    """Raise Conflict nếu khung giờ không khả thi. Trả None nếu ổn."""
+    local_start, local_end = timezone.localtime(start_at), timezone.localtime(end_at)
+    if (local_start.weekday() not in spa.open_weekdays or local_start.date() != local_end.date()
+            or local_start.time() < spa.open_time or local_end.time() > spa.close_time):
+        raise Conflict('outside_hours', 'Khung giờ nằm ngoài giờ mở cửa của spa.')
+
+    for it in items:
+        cap = Resource.objects.filter(resource_type=it['resource_type'], is_active=True).count()
+        used = BookingItem.objects.filter(
+            resource_type=it['resource_type'], booking__status__in=ACTIVE_STATUSES,
+            start_at__lt=it['end_at'], end_at__gt=it['start_at'])
+        if exclude_id:
+            used = used.exclude(booking_id=exclude_id)
+        if used.count() >= cap:
+            raise Conflict('resource_full', f'Đã hết chỗ cho "{it["service"].name}" trong khung giờ này.')
+
+    base = Booking.objects.filter(status__in=ACTIVE_STATUSES, start_at__lt=end_at, end_at__gt=start_at)
+    if exclude_id:
+        base = base.exclude(pk=exclude_id)
+    if base.filter(pet=pet).exists():
+        raise Conflict('pet_busy', 'Thú này đã có lịch trùng khung giờ.')
+    if staff:
+        d = local_start.date()
+        if TimeOff.objects.filter(staff=staff, date_from__lte=d, date_to__gte=d).exists():
+            raise Conflict('staff_off', f'{staff} đang nghỉ vào ngày này.')
+        if not staff.shifts.filter(weekday=d.weekday(), start_time__lte=local_start.time(),
+                                   end_time__gte=local_end.time()).exists():
+            raise Conflict('staff_off', f'{staff} không có ca làm phủ khung giờ này.')
+        if base.filter(staff=staff).exists():
+            raise Conflict('staff_busy', f'{staff} đã có lịch trùng khung giờ.')
+
+
+def quote(pet, package_id, service_ids, start_at, staff_id=None, exclude_id=None):
+    """Báo giá và kiểm tra khả thi mà không ghi dữ liệu."""
+    staff = _get_staff(staff_id)
+    package, items, total, end_at = build_items(pet, package_id, service_ids, start_at)
+    out = dict(
+        package=package.pk if package else None, size_class=pet.size_class,
+        start_at=start_at, end_at=end_at, total_price=total, feasible=True, conflict=None,
+        items=[dict(service=i['service'].pk, service_name=i['service'].name, start_at=i['start_at'],
+                    end_at=i['end_at'], resource_type=i['resource_type'], unit_price=i['unit_price'])
+               for i in items],
+        warnings=vaccination_warnings(pet) + specialty_warnings(items, staff),
+    )
+    try:
+        check_slot(Spa.get(), pet, items, start_at, end_at, staff, exclude_id)
+    except Conflict as e:
+        out['feasible'], out['conflict'] = False, {'code': e.detail.code, 'detail': str(e.detail)}
+    return out
+
+
+def availability(pet, package_id, service_ids, day, staff_id=None):
+    """Danh sách slot trong ngày và còn chỗ hay không."""
+    spa = Spa.get()
+    staff = _get_staff(staff_id)
+    tz = timezone.get_current_timezone()
+    step = timedelta(minutes=spa.slot_minutes)
+    cursor = timezone.make_aware(datetime.combine(day, spa.open_time), tz)
+    last = timezone.make_aware(datetime.combine(day, spa.close_time), tz)
+    now, slots = timezone.now(), []
+    while cursor < last:
+        package, items, total, end_at = build_items(pet, package_id, service_ids, cursor)
+        reason = None
+        if cursor <= now:
+            reason = {'code': 'in_past', 'detail': 'Đã qua giờ này.'}
+        else:
+            try:
+                check_slot(spa, pet, items, cursor, end_at, staff)
+            except Conflict as e:
+                reason = {'code': e.detail.code, 'detail': str(e.detail)}
+        slots.append({'start_at': cursor, 'end_at': end_at, 'available': reason is None, 'reason': reason})
+        cursor += step
+    return slots
+
+
+def _get_staff(staff_id):
+    if not staff_id:
+        return None
+    staff = StaffProfile.objects.select_related('user').filter(
+        pk=staff_id, is_active=True, user__role=Role.TECHNICIAN).first()
+    if not staff:
+        raise ValidationError({'staff': 'Kỹ thuật viên không tồn tại hoặc đã nghỉ.'})
+    return staff
+
+
+# ---------------------------------------------------------------- ghi dữ liệu
+
+def _log(booking, from_status, to_status, user, reason=''):
+    BookingStatusLog.objects.create(
+        booking=booking, from_status=from_status, to_status=to_status, changed_by=user, reason=reason)
+
+
+@transaction.atomic
+def create_booking(user, pet, package_id, service_ids, start_at, staff_id=None, note='',
+                   customer_note='', channel=None, confirm=True):
+    """Tạo lịch. Khách -> pending. Lễ tân/Quản lý -> confirmed (hoặc pending nếu confirm=False)."""
+    is_customer = user.role == Role.CUSTOMER
+    if not pet.is_active:
+        raise ValidationError({'pet': 'Hồ sơ thú đã ngừng hoạt động.'})
+    if is_customer and start_at <= timezone.now():
+        raise ValidationError({'start_at': 'Giờ hẹn phải ở tương lai.'})
+
+    Spa.objects.select_for_update().get(pk=1)  # tuần tự hóa kiểm tra-rồi-ghi (PostgreSQL)
+    staff = _get_staff(staff_id) if not is_customer else None
+    package, items, total, end_at = build_items(pet, package_id, service_ids, start_at)
+    check_slot(Spa.get(), pet, items, start_at, end_at, staff)
+
+    status = BookingStatus.PENDING if (is_customer or not confirm) else BookingStatus.CONFIRMED
+    booking = Booking.objects.create(
+        client=pet.client, pet=pet, package=package, staff=staff, status=status,
+        start_at=start_at, end_at=end_at, created_by=user, total_price=total,
+        channel=Booking.Channel.ONLINE if is_customer else (channel or Booking.Channel.COUNTER),
+        note_internal='' if is_customer else note, customer_note=customer_note)
+    BookingItem.objects.bulk_create([BookingItem(booking=booking, **i) for i in items])
+    _log(booking, '', status, user)
+    if status == BookingStatus.PENDING:
+        notify(_front_desk_users(), 'booking_new', 'Có lịch hẹn mới chờ duyệt',
+               f'{pet.name} - {timezone.localtime(start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    elif pet.client.user_id:
+        notify([pet.client.user], 'booking_confirmed', 'Lịch hẹn đã được xác nhận',
+               f'{pet.name} - {timezone.localtime(start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    return booking
+
+
+def _move(booking, to, user, reason='', **fields):
+    cur = BookingStatus(booking.status)
+    if to not in TRANSITIONS[cur]:
+        raise Conflict('invalid_transition', f'Không thể chuyển từ "{cur.label}" sang "{BookingStatus(to).label}".')
+    for k, v in fields.items():
+        setattr(booking, k, v)
+    booking.status = to
+    booking.save()
+    _log(booking, cur, to, user, reason)
+
+
+def _notify_client(booking, kind, title):
+    if booking.client.user_id:
+        notify([booking.client.user], kind, title,
+               f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
+
+
+@transaction.atomic
+def confirm(booking, user):
+    Spa.objects.select_for_update().get(pk=1)
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    if booking.status != BookingStatus.PENDING:
+        raise Conflict('invalid_transition', 'Chỉ duyệt được lịch đang chờ duyệt.')
+    items = [dict(service=i.service, start_at=i.start_at, end_at=i.end_at, resource_type=i.resource_type)
+             for i in booking.items.select_related('service')]
+    check_slot(Spa.get(), booking.pet, items, booking.start_at, booking.end_at, booking.staff, booking.pk)
+    _move(booking, BookingStatus.CONFIRMED, user)
+    _notify_client(booking, 'booking_confirmed', 'Lịch hẹn đã được xác nhận')
+    return booking
+
+
+@transaction.atomic
+def cancel(booking, user, reason='', code=''):
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    cur = BookingStatus(booking.status)
+    if BookingStatus.CANCELLED not in TRANSITIONS[cur]:
+        raise Conflict('invalid_transition', f'Không thể hủy lịch ở trạng thái "{cur.label}".')
+    now = timezone.now()
+    if user.role == Role.CUSTOMER:
+        cutoff = timedelta(hours=Spa.get().cancel_cutoff_hours)
+        if cur == BookingStatus.CONFIRMED and booking.start_at - now < cutoff:
+            raise Conflict('cancel_too_late',
+                           f'Chỉ tự hủy được trước giờ hẹn tối thiểu {Spa.get().cancel_cutoff_hours} giờ. '
+                           'Vui lòng liên hệ spa.')
+        reason, code = reason or 'Khách tự hủy.', Booking.CancelCode.CUSTOMER
+    else:
+        if not reason.strip():
+            raise ValidationError({'reason': 'Bắt buộc nhập lý do.'})
+        if code == Booking.CancelCode.NO_SHOW:
+            if cur != BookingStatus.CONFIRMED or booking.start_at > now:
+                raise Conflict('invalid_transition', 'Chỉ đánh dấu không đến với lịch đã xác nhận và đã qua giờ hẹn.')
+        elif cur == BookingStatus.PENDING and not code:
+            code = Booking.CancelCode.REJECTED
+        code = code or Booking.CancelCode.OTHER
+    if not reason.strip():
+        raise ValidationError({'reason': 'Bắt buộc nhập lý do.'})
+    _move(booking, BookingStatus.CANCELLED, user, reason, cancel_reason=reason, cancel_reason_code=code)
+    if user.role != Role.CUSTOMER:
+        _notify_client(booking, 'booking_cancelled', 'Lịch hẹn đã bị hủy')
+    else:
+        notify(_front_desk_users(), 'booking_cancelled', 'Khách đã hủy lịch hẹn',
+               f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    return booking
+
+
+@transaction.atomic
+def assign_staff(booking, staff_id, user):
+    Spa.objects.select_for_update().get(pk=1)
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    if booking.status not in ACTIVE_STATUSES:
+        raise Conflict('invalid_transition', 'Không thể đổi kỹ thuật viên của lịch đã kết thúc.')
+    staff = _get_staff(staff_id)
+    if staff:
+        items = [dict(service=i.service, start_at=i.start_at, end_at=i.end_at, resource_type=i.resource_type)
+                 for i in booking.items.select_related('service')]
+        check_slot(Spa.get(), booking.pet, items, booking.start_at, booking.end_at, staff, booking.pk)
+    booking.staff = staff
+    booking.save(update_fields=['staff', 'updated_at'])
+    if staff:
+        notify([staff.user], 'booking_assigned', 'Bạn được giao một lịch hẹn',
+               f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    return booking
+
+
+@transaction.atomic
+def check_in(booking, user, assignments=None):
+    """assignments: {item_id: resource_id}. Thiếu thì tự gán tài nguyên trống."""
+    Spa.objects.select_for_update().get(pk=1)
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    if booking.status != BookingStatus.CONFIRMED:
+        raise Conflict('invalid_transition', 'Chỉ nhận thú với lịch đã xác nhận.')
+    assignments = assignments or {}
+    for item in booking.items.select_related('service'):
+        busy_ids = BookingItem.objects.filter(
+            resource__isnull=False, booking__status__in=(BookingStatus.CHECKED_IN, BookingStatus.IN_PROGRESS),
+            start_at__lt=item.end_at, end_at__gt=item.start_at).exclude(booking=booking
+            ).values_list('resource_id', flat=True)
+        free = Resource.objects.filter(resource_type=item.resource_type, is_active=True).exclude(pk__in=busy_ids)
+        wanted = assignments.get(item.pk)
+        res = free.filter(pk=wanted).first() if wanted else free.first()
+        if not res:
+            raise Conflict('no_resource', f'Không còn tài nguyên trống cho "{item.service.name}".')
+        item.resource = res
+        item.save(update_fields=['resource'])
+    _move(booking, BookingStatus.CHECKED_IN, user, checked_in_at=timezone.now())
+    return booking
+
+
+def _require_technician(booking, user):
+    if user.role == Role.TECHNICIAN and not (booking.staff_id and booking.staff.user_id == user.id):
+        raise Conflict('not_assigned', 'Bạn không được giao lịch này.')
+    if not booking.staff_id:
+        raise Conflict('no_staff', 'Lịch chưa có kỹ thuật viên phụ trách.')
+
+
+@transaction.atomic
+def start(booking, user):
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    _require_technician(booking, user)
+    _move(booking, BookingStatus.IN_PROGRESS, user)
+    return booking
+
+
+@transaction.atomic
+def complete(booking, user):
+    from billing.services import create_invoice
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    _require_technician(booking, user)
+    _move(booking, BookingStatus.COMPLETED, user, completed_at=timezone.now())
+    create_invoice(booking)
+    notify(_front_desk_users(), 'booking_completed', 'Có thú đã làm xong, chờ thu tiền',
+           f'{booking.pet.name}', 'booking', booking.pk)
+    return booking
+
+
+@transaction.atomic
+def check_out(booking, user):
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    if booking.status != BookingStatus.COMPLETED:
+        raise Conflict('invalid_transition', 'Chỉ trả thú với lịch đã hoàn tất.')
+    if booking.checked_out_at:
+        raise Conflict('invalid_transition', 'Lịch này đã được trả thú.')
+    booking.checked_out_at = timezone.now()
+    booking.save(update_fields=['checked_out_at', 'updated_at'])
+    _log(booking, BookingStatus.COMPLETED, BookingStatus.COMPLETED, user, 'Trả thú')
+    return booking
