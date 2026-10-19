@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.db import transaction
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
@@ -9,7 +11,7 @@ from accounts.models import Role, User
 from accounts.permissions import IsStaffRole
 from catalog.models import Specialty
 
-from .models import Resource, StaffProfile, TimeOff, WorkShift
+from .models import Resource, Spa, StaffProfile, TimeOff, WorkShift
 
 STAFF_ROLES = (Role.RECEPTIONIST, Role.TECHNICIAN)
 
@@ -54,6 +56,18 @@ class StaffSerializer(serializers.ModelSerializer):
         user.save()
         profile = StaffProfile.objects.create(user=user, **validated)
         profile.specialties.set(specialties)
+
+        # Tự động tạo ca làm việc mặc định từ T2 đến CN nếu là Kỹ thuật viên
+        if u['role'] == Role.TECHNICIAN:
+            spa = Spa.get()
+            start_t = spa.open_time if spa and spa.open_time else time(8, 0)
+            end_t = spa.close_time if spa and spa.close_time else time(19, 0)
+            open_days = spa.open_weekdays if spa and spa.open_weekdays else list(range(7))
+            WorkShift.objects.bulk_create([
+                WorkShift(staff=profile, weekday=day, start_time=start_t, end_time=end_t)
+                for day in open_days
+            ])
+
         return profile
 
     @transaction.atomic

@@ -7,8 +7,8 @@ import {
 } from 'antd'
 import {
   CalendarOutlined, DeleteOutlined, DollarOutlined, EditOutlined,
-  EyeOutlined, HistoryOutlined, IdcardOutlined, MedicineBoxOutlined,
-  PlusOutlined, RobotOutlined, UserOutlined,
+  EyeOutlined, HistoryOutlined, IdcardOutlined, LockOutlined, MedicineBoxOutlined,
+  PlusOutlined, RobotOutlined, ThunderboltOutlined, UserOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
@@ -44,6 +44,12 @@ export default function Clients() {
   // Modal sửa/thêm khách
   const [editing, setEditing] = useState(null)
   const [busy, setBusy] = useState(false)
+
+  // Modal đổi mật khẩu khách
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resetClient, setResetClient] = useState(null)
+  const [resetBusy, setResetBusy] = useState(false)
+  const [resetForm] = Form.useForm()
 
   // Drawer chi tiết khách & danh sách thú cưng của khách
   const [detailClient, setDetailClient] = useState(null)
@@ -87,6 +93,43 @@ export default function Clients() {
       form.resetFields()
     }
   }, [editing, form])
+
+  // Tự động sinh mật khẩu ngẫu nhiên an toàn
+  const generateRandomPassword = () => {
+    const prefixes = ['PetSpa', 'SpaAI', 'HappyPet', 'PawsCare', 'ProGroom', 'SpaVet']
+    const symbols = ['@', '#', '$', '!']
+    const randPrefix = prefixes[Math.floor(Math.random() * prefixes.length)]
+    const randSym = symbols[Math.floor(Math.random() * symbols.length)]
+    const randNum = Math.floor(1000 + Math.random() * 9000)
+    const genPass = `${randPrefix}${randSym}${randNum}`
+    resetForm.setFieldsValue({
+      new_password: genPass,
+      confirm_password: genPass,
+    })
+    navigator.clipboard?.writeText(genPass)
+    message.success(`Đã tạo mật khẩu an toàn: ${genPass} (Đã sao chép vào bộ nhớ tạm)`)
+  }
+
+  // Đặt lại mật khẩu cho khách có tài khoản
+  const handleResetPassword = async () => {
+    try {
+      const values = await resetForm.validateFields()
+      setResetBusy(true)
+      await api(`/auth/users/${resetClient.user_id}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify({ new_password: values.new_password }),
+      })
+      message.success(`Đã đặt lại mật khẩu cho khách hàng ${resetClient.full_name}!`)
+      setResetModalOpen(false)
+      resetForm.resetFields()
+    } catch (e) {
+      const fields = toFormErrors(e)
+      if (fields.length) resetForm.setFields(fields)
+      message.error(e.message || 'Lỗi khi đặt lại mật khẩu')
+    } finally {
+      setResetBusy(false)
+    }
+  }
 
   // Mở Drawer chi tiết khách hàng và nạp thú cưng
   const openDetailDrawer = async (client) => {
@@ -255,6 +298,25 @@ export default function Clients() {
           <Button size="small" icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); setEditing(r) }}>
             Sửa
           </Button>
+          {r.user_id ? (
+            <Button
+              size="small"
+              icon={<LockOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                setResetClient(r)
+                resetForm.resetFields()
+                setResetModalOpen(true)
+              }}
+              title="Đặt lại mật khẩu cho khách này"
+            >
+              Đổi MK
+            </Button>
+          ) : (
+            <Tooltip title="Khách chỉ tạo hồ sơ tại quầy, chưa đăng ký tài khoản web">
+              <Tag color="default" style={{ margin: 0 }}>Tại quầy</Tag>
+            </Tooltip>
+          )}
           <Button
             size="small"
             icon={<CalendarOutlined />}
@@ -582,6 +644,77 @@ export default function Clients() {
           nav(`/app/lich-hen?pet=${pet.id}&package=${pkg.id}`)
         }}
       />
+
+      {/* Modal Đặt lại mật khẩu khách hàng */}
+      <Modal
+        centered
+        title={`Đặt lại mật khẩu cho khách: ${resetClient?.full_name || ''} (${resetClient?.phone || ''})`}
+        open={resetModalOpen}
+        onCancel={() => setResetModalOpen(false)}
+        onOk={handleResetPassword}
+        okText="Cập nhật mật khẩu"
+        confirmLoading={resetBusy}
+      >
+        <Form form={resetForm} layout="vertical">
+          <Paragraph type="secondary" style={{ marginBottom: 14 }}>
+            Nhập mật khẩu mới hỗ trợ cho khách hàng tại quầy. Mật khẩu mới tối thiểu 8 ký tự.
+          </Paragraph>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontWeight: 600, color: '#334155', fontSize: 13 }}>
+              <span style={{ color: '#ff4d4f' }}>* </span>Mật khẩu mới
+            </span>
+            <Button
+              type="dashed"
+              size="small"
+              icon={<ThunderboltOutlined style={{ color: '#0f8b8d' }} />}
+              onClick={generateRandomPassword}
+              style={{ fontSize: 12, borderRadius: 6, borderColor: '#cbd5e1' }}
+            >
+              Tạo mật khẩu nhanh
+            </Button>
+          </div>
+
+          <Form.Item
+            name="new_password"
+            rules={[
+              { required: true, message: 'Nhập mật khẩu mới' },
+              { min: 8, message: 'Mật khẩu phải có tối thiểu 8 ký tự' },
+              {
+                validator(_, value) {
+                  if (value && /^\d+$/.test(value)) {
+                    return Promise.reject(new Error('Mật khẩu không được hoàn toàn là chữ số. Vui lòng kết hợp thêm chữ cái.'))
+                  }
+                  return Promise.resolve()
+                },
+              },
+            ]}
+            extra={<span style={{ fontSize: 12, color: '#64748b' }}>Gợi ý: Tối thiểu 8 ký tự, có thể bấm nút "Tạo mật khẩu nhanh" để tự sinh mật khẩu an toàn.</span>}
+            style={{ marginBottom: 14 }}
+          >
+            <Input.Password prefix={<LockOutlined style={{ color: '#0f8b8d' }} />} placeholder="Tối thiểu 8 ký tự" />
+          </Form.Item>
+
+          <Form.Item
+            name="confirm_password"
+            label="Xác nhận lại mật khẩu mới"
+            dependencies={['new_password']}
+            rules={[
+              { required: true, message: 'Vui lòng xác nhận lại mật khẩu' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('new_password') === value) {
+                    return Promise.resolve()
+                  }
+                  return Promise.reject(new Error('Mật khẩu xác nhận không khớp!'))
+                },
+              }),
+            ]}
+          >
+            <Input.Password prefix={<LockOutlined style={{ color: '#0f8b8d' }} />} placeholder="Nhập lại chính xác mật khẩu mới" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   )
 }

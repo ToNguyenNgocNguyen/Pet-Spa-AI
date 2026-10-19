@@ -15,16 +15,17 @@ class PetBriefSerializer(serializers.ModelSerializer):
 
 
 class ClientSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
     pet_count = serializers.IntegerField(source='pets.count', read_only=True)
     pets = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = [
-            'id', 'full_name', 'phone', 'email', 'address', 'note', 'source',
+            'id', 'user_id', 'full_name', 'phone', 'email', 'address', 'note', 'source',
             'allow_reminders', 'is_active', 'pet_count', 'pets', 'created_at',
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'user_id', 'created_at']
 
     def get_pets(self, client):
         active_pets = client.pets.filter(is_active=True)

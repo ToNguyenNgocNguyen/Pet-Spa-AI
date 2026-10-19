@@ -68,6 +68,99 @@ class AuthTests(BaseCase):
         self.assertEqual(r.status_code, 401)
         self.assertEqual(r.json()['code'], 'not_authenticated')
 
+    def test_register_auto_links_existing_walkin_client(self):
+        walkin = Client.objects.create(full_name='Khách Tại Quầy', phone='0988', source=Client.Source.WALK_IN)
+        pet = Pet.objects.create(client=walkin, name='Miu', species='cat', weight_kg=3.5, allergy_note='Không')
+
+        c = APIClient()
+        r = c.post(f'{API}/auth/register', {
+            'username': 'khach_quay', 'password': 'Matkhau@123', 'full_name': 'Khách Tại Quầy', 'phone': '0988',
+        }, format='json')
+        self.assertEqual(r.status_code, 201)
+        self.assertTrue(r.json().get('linked_existing_client'))
+
+        walkin.refresh_from_db()
+        self.assertIsNotNone(walkin.user)
+        self.assertEqual(walkin.user.username, 'khach_quay')
+        # Thú cưng vẫn thuộc về client này
+        self.assertEqual(walkin.pets.first().name, 'Miu')
+
+    def test_register_duplicate_phone_rejected(self):
+        c = APIClient()
+        r = c.post(f'{API}/auth/register', {
+            'username': 'trung_phone', 'password': 'Matkhau@123', 'full_name': 'Trùng', 'phone': '0911',
+        }, format='json')
+        self.assertEqual(r.status_code, 422)
+        self.assertIn('phone', r.json()['fields'])
+
+    def test_login_with_phone_number(self):
+        c = APIClient()
+        # client_a có phone '0911', user 'ka'
+        r = c.post(f'{API}/auth/login', {'username': '0911', 'password': 'Matkhau@123'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['user']['username'], 'ka')
+
+    def test_admin_reset_password(self):
+        client = login('rec')
+        r = client.post(f'{API}/auth/users/{self.cust_a.id}/reset-password', {
+            'new_password': 'MatkhauMoi@123',
+        }, format='json')
+        self.assertEqual(r.status_code, 200)
+
+        # Đăng nhập lại với mật khẩu mới
+        c = APIClient()
+        r2 = c.post(f'{API}/auth/login', {'username': 'ka', 'password': 'MatkhauMoi@123'}, format='json')
+        self.assertEqual(r2.status_code, 200)
+
+    def test_forgot_password_otp_flow(self):
+        c = APIClient()
+
+        # 1. Yêu cầu OTP cho SĐT không tồn tại -> Lỗi 422
+        r = c.post(f'{API}/auth/forgot-password/request-otp', {'phone': '0999999999'}, format='json')
+        self.assertEqual(r.status_code, 422)
+
+        # 2. Yêu cầu OTP cho SĐT '0911' (khách hàng ka) -> Thành công 200
+        r = c.post(f'{API}/auth/forgot-password/request-otp', {'phone': '0911'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['success'])
+        otp_code = r.json()['dev_otp']
+        self.assertEqual(len(otp_code), 6)
+
+        # 3. Yêu cầu OTP lại ngay lập tức -> Cooldown 429
+        r_cooldown = c.post(f'{API}/auth/forgot-password/request-otp', {'phone': '0911'}, format='json')
+        self.assertEqual(r_cooldown.status_code, 429)
+
+        # 4. Verify OTP sai -> 422
+        r_verify_wrong = c.post(f'{API}/auth/forgot-password/verify-otp', {
+            'phone': '0911', 'otp_code': '000000',
+        }, format='json')
+        self.assertEqual(r_verify_wrong.status_code, 422)
+
+        # 5. Verify OTP đúng -> 200
+        r_verify = c.post(f'{API}/auth/forgot-password/verify-otp', {
+            'phone': '0911', 'otp_code': otp_code,
+        }, format='json')
+        self.assertEqual(r_verify.status_code, 200)
+
+        # 6. Reset mật khẩu không khớp -> 422
+        r_mismatch = c.post(f'{API}/auth/forgot-password/reset', {
+            'phone': '0911', 'otp_code': otp_code,
+            'new_password': 'NewPassword@123', 'confirm_password': 'MismatchPassword@123',
+        }, format='json')
+        self.assertEqual(r_mismatch.status_code, 422)
+
+        # 7. Reset mật khẩu thành công -> 200
+        r_reset = c.post(f'{API}/auth/forgot-password/reset', {
+            'phone': '0911', 'otp_code': otp_code,
+            'new_password': 'NewPassword@123', 'confirm_password': 'NewPassword@123',
+        }, format='json')
+        self.assertEqual(r_reset.status_code, 200)
+
+        # 8. Đăng nhập ngay bằng mật khẩu mới
+        r_login = c.post(f'{API}/auth/login', {'username': 'ka', 'password': 'NewPassword@123'}, format='json')
+        self.assertEqual(r_login.status_code, 200)
+
+
 
 class CustomerScopeTests(BaseCase):
     def test_customer_sees_only_own_pets(self):
