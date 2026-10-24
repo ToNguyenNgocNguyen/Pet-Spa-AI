@@ -18,7 +18,8 @@ export const APP_ROUTES = [
   { path: '/app/lich-hen', label: 'Lịch hẹn', element: <Bookings />, roles: null, public: true },
   { path: '/app/hoa-don', label: 'Hóa đơn & Thu ngân', element: <Invoices />, roles: ['customer', 'receptionist', 'manager'] },
   { path: '/app/nhac-tai-spa', label: 'Nhắc tái spa (AI)', element: <RebookReminders />, roles: ['customer', 'receptionist', 'manager'] },
-  { path: '/app/thu-cung', label: 'Thú cưng', element: <Pets />, roles: ['customer', 'receptionist', 'manager'] },
+  // Nhân viên quản lý thú cưng trong trang Khách hàng; route này chỉ còn hiện ở menu của khách (nhân viên được chuyển hướng)
+  { path: '/app/thu-cung', label: 'Thú cưng', element: <Pets />, roles: ['customer', 'receptionist', 'manager'], hideInMenuFor: ['receptionist', 'manager'] },
   { path: '/app/khach-hang', label: 'Khách hàng', element: <Clients />, roles: ['receptionist', 'manager'] },
   { path: '/app/dich-vu', label: 'Dịch vụ & Giá', element: <Catalog />, roles: null, public: true },
   { path: '/app/nhan-su', label: 'Nhân sự & Cơ sở', element: <StaffManagement />, roles: ['receptionist', 'manager'] },

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
-  Avatar, Badge, Button, Dropdown, Layout, List, Menu, Popover,
-  Space, Tag, Typography, message,
+  App, Avatar, Badge, Button, Dropdown, Layout, List, Menu, Popover,
+  Space, Tag, Typography,
 } from 'antd'
 import {
   BankOutlined, BarChartOutlined, BellOutlined, CalendarOutlined, CheckOutlined, DashboardOutlined,
-  DollarOutlined, GlobalOutlined, HistoryOutlined, IdcardOutlined,
+  DollarOutlined, ExclamationCircleOutlined, GlobalOutlined, HistoryOutlined, IdcardOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RobotOutlined, ShopOutlined, TeamOutlined,
   ToolOutlined, UserOutlined,
 } from '@ant-design/icons'
@@ -59,9 +59,31 @@ const NAV_GROUPS = [
 ]
 
 export default function AppLayout() {
+  const { modal, message } = App.useApp()
   const { user, logout } = useAuth()
   const nav = useNavigate()
   const { pathname } = useLocation()
+
+  const handleLogout = () => {
+    modal.confirm({
+      title: 'Xác nhận đăng xuất',
+      icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
+      content: 'Bạn có chắc chắn muốn đăng xuất khỏi hệ thống không?',
+      okText: 'Đăng xuất',
+      okType: 'danger',
+      cancelText: 'Hủy',
+      centered: true,
+      onOk: async () => {
+        try {
+          await logout()
+          message.success('Đã đăng xuất thành công.')
+          nav('/')
+        } catch {
+          nav('/')
+        }
+      },
+    })
+  }
 
   // Trạng thái thu gọn sidebar (lưu vào localStorage)
   const [collapsed, setCollapsed] = useState(() => {
@@ -132,7 +154,9 @@ export default function AppLayout() {
   }
 
   // Lọc routes theo vai trò và tổ chức thành nhóm
-  const visibleRoutes = APP_ROUTES.filter((r) => (r.roles ? user && r.roles.includes(user.role) : true))
+  const visibleRoutes = APP_ROUTES.filter(
+    (r) => (r.roles ? user && r.roles.includes(user.role) : true) && !(r.hideInMenuFor && user && r.hideInMenuFor.includes(user.role)),
+  )
   const routeMap = new Map(visibleRoutes.map((r) => [r.path, r]))
 
   const menuItems = collapsed
@@ -327,10 +351,8 @@ export default function AppLayout() {
                       key: 'out',
                       label: 'Đăng xuất',
                       icon: <LogoutOutlined />,
-                      onClick: async () => {
-                        await logout()
-                        nav('/')
-                      },
+                      danger: true,
+                      onClick: handleLogout,
                     },
                   ],
                 }}

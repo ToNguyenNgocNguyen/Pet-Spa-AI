@@ -974,13 +974,30 @@ body {
 /* ===== AI FLOATING CHAT BUBBLE ===== */
 .ai-chat-bubble-wrap {
   position: fixed;
-  right: 28px;
-  bottom: 28px;
+  right: 24px;
+  bottom: 24px;
   z-index: 1000;
-  cursor: pointer;
+  cursor: grab;
   display: flex;
   align-items: center;
   gap: 10px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ai-chat-bubble-wrap.is-dragging {
+  cursor: grabbing !important;
+}
+
+.ai-chat-bubble-wrap.is-dragging .ai-chat-bubble-btn {
+  transform: scale(1.08);
+  box-shadow: 0 20px 35px -4px rgba(13, 148, 136, 0.7), 0 0 0 3px rgba(20, 184, 166, 0.5);
+  transition: none !important;
+}
+
+.ai-chat-bubble-wrap.is-dragging .ai-chat-bubble-label {
+  opacity: 0 !important;
+  visibility: hidden;
 }
 
 .ai-chat-bubble-btn {

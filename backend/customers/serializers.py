@@ -18,12 +18,17 @@ class ClientSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source='user.id', read_only=True)
     pet_count = serializers.IntegerField(source='pets.count', read_only=True)
     pets = serializers.SerializerMethodField()
+    completed_bookings_count = serializers.SerializerMethodField()
+    total_spent = serializers.SerializerMethodField()
+    last_booking_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = [
-            'id', 'user_id', 'full_name', 'phone', 'email', 'address', 'note', 'source',
-            'allow_reminders', 'is_active', 'pet_count', 'pets', 'created_at',
+            'id', 'user_id', 'full_name', 'phone', 'secondary_phone', 'birthday',
+            'email', 'address', 'note', 'source', 'allow_reminders', 'is_active',
+            'pet_count', 'pets', 'completed_bookings_count', 'total_spent', 'last_booking_date',
+            'created_at',
         ]
         read_only_fields = ['id', 'user_id', 'created_at']
 
@@ -31,13 +36,39 @@ class ClientSerializer(serializers.ModelSerializer):
         active_pets = client.pets.filter(is_active=True)
         return PetBriefSerializer(active_pets, many=True).data
 
+    def get_completed_bookings_count(self, client):
+        if hasattr(client, 'completed_bookings'):
+            return client.completed_bookings
+        return client.bookings.filter(status='completed').count()
+
+    def get_total_spent(self, client):
+        if hasattr(client, 'total_spent'):
+            return int(client.total_spent or 0)
+        from django.db.models import Sum
+        val = client.bookings.filter(invoice__status='paid').aggregate(t=Sum('invoice__total'))['t']
+        return int(val or 0)
+
+    def get_last_booking_date(self, client):
+        if hasattr(client, 'last_booking_date'):
+            return client.last_booking_date
+        last_b = client.bookings.filter(status='completed').order_by('-start_at').first()
+        return last_b.start_at if last_b else None
+
     def validate_phone(self, value):
-        qs = Client.objects.filter(phone=value, is_active=True)
+        from accounts.serializers import normalize_phone_number
+        cleaned = normalize_phone_number(value)
+        qs = Client.objects.filter(phone=cleaned, is_active=True)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError('Số điện thoại đã có trong hồ sơ khách.')
-        return value
+        return cleaned
+
+    def validate_secondary_phone(self, value):
+        if not value:
+            return ''
+        from accounts.serializers import normalize_phone_number
+        return normalize_phone_number(value)
 
 
 class ClientSelfSerializer(serializers.ModelSerializer):
@@ -45,7 +76,7 @@ class ClientSelfSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Client
-        fields = ['id', 'full_name', 'phone', 'email', 'address', 'allow_reminders']
+        fields = ['id', 'full_name', 'phone', 'secondary_phone', 'birthday', 'email', 'address', 'allow_reminders']
         read_only_fields = ['id']
 
 
@@ -82,7 +113,11 @@ class PetSerializer(serializers.ModelSerializer):
             'allergy_note', 'safety_note', 'is_active', 'vaccinations',
         ]
         read_only_fields = ['id', 'size_class']
-        extra_kwargs = {'client': {'required': False}}
+        extra_kwargs = {
+            'client': {'required': False},
+            'breed': {'required': True, 'allow_blank': False},
+            'birth_date': {'required': True, 'allow_null': False},
+        }
 
     def get_fields(self):
         fields = super().get_fields()
@@ -114,7 +149,14 @@ class PetSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Cân nặng phải lớn hơn 0.')
         return value
 
+    def validate_breed(self, value):
+        if not value or not str(value).strip():
+            raise serializers.ValidationError('Vui lòng chọn hoặc nhập giống thú cưng.')
+        return str(value).strip()
+
     def validate_birth_date(self, value):
-        if value and value > date.today():
+        if not value:
+            raise serializers.ValidationError('Vui lòng chọn ngày sinh của thú cưng.')
+        if value > date.today():
             raise serializers.ValidationError('Ngày sinh không được ở tương lai.')
         return value

@@ -1,105 +1,40 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, App, Button, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Typography,
+  Alert, App, Button, Descriptions, Drawer, Input, Popconfirm, Space, Table, Tag, Typography,
 } from 'antd'
 import { CalendarOutlined, DeleteOutlined, EditOutlined, EyeOutlined, MedicineBoxOutlined, PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
-import { api, toFormErrors, unwrap } from '../api.js'
+import { api, unwrap } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import AiPackageModal from '../components/AiPackageModal.jsx'
 import RowPerPageSelect from '../components/RowPerPageSelect.jsx'
-
-const SPECIES = { dog: 'Chó', cat: 'Mèo' }
-const COAT = { short: 'Lông ngắn', long: 'Lông dài', curly: 'Lông xoăn', double: 'Lông kép', hairless: 'Không lông' }
-const SEX = { male: 'Đực', female: 'Cái', unknown: 'Chưa rõ' }
-const opts = (m) => Object.entries(m).map(([value, label]) => ({ value, label }))
-const fmt = (d) => (d ? dayjs(d).format('YYYY-MM-DD') : null)
+import PetFormModal, { COAT, SEX, SPECIES } from '../components/PetFormModal.jsx'
+import VaccinationModal from '../components/VaccinationModal.jsx'
+import PetAvatar from '../components/PetAvatar.jsx'
 
 function age(months) {
   if (months == null) return '—'
   return months >= 12 ? `${Math.floor(months / 12)} tuổi ${months % 12} tháng` : `${months} tháng`
 }
 
-function VaccinationModal({ pet, canEdit, onClose, onChanged }) {
-  const { message } = App.useApp()
-  const [form] = Form.useForm()
-  const [rows, setRows] = useState([])
 
-  const load = useCallback(async () => {
-    if (pet) setRows(await api(`/pets/${pet.id}/vaccinations`))
-  }, [pet])
-  useEffect(() => { load() }, [load])
-
-  const add = async () => {
-    const v = await form.validateFields()
-    try {
-      await api(`/pets/${pet.id}/vaccinations`, {
-        method: 'POST',
-        body: { vaccine_name: v.vaccine_name, date_given: fmt(v.date_given), valid_until: fmt(v.valid_until) },
-      })
-      form.resetFields()
-      await load()
-      onChanged()
-    } catch (e) {
-      form.setFields(toFormErrors(e))
-      message.error(e.message)
-    }
-  }
-
-  const remove = async (id) => {
-    await api(`/pets/${pet.id}/vaccinations/${id}`, { method: 'DELETE' })
-    await load()
-    onChanged()
-  }
-
-  return (
-    <Modal centered open={!!pet} title={pet ? `Tiêm phòng: ${pet.name}` : ''} onCancel={onClose} footer={null} destroyOnHidden width={640}>
-      <Table
-        size="small" rowKey="id" dataSource={rows} pagination={false}
-        locale={{ emptyText: 'Chưa có mũi tiêm nào' }}
-        columns={[
-          { title: 'Vaccine', dataIndex: 'vaccine_name' },
-          { title: 'Ngày tiêm', dataIndex: 'date_given', render: (v) => dayjs(v).format('DD/MM/YYYY') },
-          { title: 'Hiệu lực đến', dataIndex: 'valid_until', render: (v) => (v ? dayjs(v).format('DD/MM/YYYY') : '—') },
-          ...(canEdit ? [{ title: '', key: 'x', width: 50, render: (_, r) => (
-            <Popconfirm title="Xóa mũi tiêm này?" okText="Xóa" cancelText="Hủy" onConfirm={() => remove(r.id)}>
-              <Button size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>) }] : []),
-        ]}
-      />
-      {canEdit && (
-        <Form form={form} layout="inline" style={{ marginTop: 16, rowGap: 8 }}>
-          <Form.Item name="vaccine_name" rules={[{ required: true, message: 'Nhập loại vaccine' }]}><Input placeholder="Loại vaccine" /></Form.Item>
-          <Form.Item name="date_given" rules={[{ required: true, message: 'Chọn ngày tiêm' }]}>
-            <DatePicker placeholder="Ngày tiêm" format="DD/MM/YYYY" disabledDate={(d) => d.isAfter(dayjs())} />
-          </Form.Item>
-          <Form.Item name="valid_until"><DatePicker placeholder="Hiệu lực đến" format="DD/MM/YYYY" /></Form.Item>
-          <Button type="primary" icon={<PlusOutlined />} onClick={add}>Thêm</Button>
-        </Form>
-      )}
-    </Modal>
-  )
-}
-
+// Trang thú cưng dành riêng cho khách hàng. Nhân viên quản lý thú cưng ngay trong trang Khách hàng.
 export default function Pets() {
   const { message } = App.useApp()
   const nav = useNavigate()
   const { user } = useAuth()
   const isCustomer = user.role === 'customer'
-  const [form] = Form.useForm()
   const [data, setData] = useState({ results: [], count: 0 })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
   const [tags, setTags] = useState([])
-  const [clientOpts, setClientOpts] = useState([])
   const [editing, setEditing] = useState(null)
   const [detailPet, setDetailPet] = useState(null)
   const [vaccPet, setVaccPet] = useState(null)
   const [aiPet, setAiPet] = useState(null)
-  const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -110,46 +45,12 @@ export default function Pets() {
     }
   }, [page, pageSize, q])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { if (isCustomer) load() }, [load, isCustomer])
   useEffect(() => { api('/health-tags').then((t) => setTags(unwrap(t))) }, [])
 
-  const searchClients = useCallback(async (text) => {
-    if (isCustomer) return
-    const res = await api('/clients', { params: { q: text } })
-    setClientOpts(res.results.map((c) => ({ value: c.id, label: `${c.full_name} (${c.phone})` })))
-  }, [isCustomer])
-
-  useEffect(() => {
-    if (!editing) { form.resetFields(); return }
-    form.setFieldsValue({
-      species: 'dog', coat_type: 'short', sex: 'unknown', health_tags: [], allergy_note: '',
-      ...editing,
-      birth_date: editing.birth_date ? dayjs(editing.birth_date) : null,
-      weight_kg: editing.weight_kg ? Number(editing.weight_kg) : null,
-    })
-    if (!isCustomer) {
-      searchClients('')
-      if (editing.client) setClientOpts((o) => o.some((x) => x.value === editing.client) ? o : [...o, { value: editing.client, label: editing.client_name }])
-    }
-  }, [editing, form, isCustomer, searchClients])
-
-  const save = async () => {
-    const v = await form.validateFields()
-    const body = { ...v, birth_date: fmt(v.birth_date), weight_kg: String(v.weight_kg) }
-    if (isCustomer) delete body.client
-    setBusy(true)
-    try {
-      if (editing?.id) await api(`/pets/${editing.id}`, { method: 'PATCH', body })
-      else await api('/pets', { method: 'POST', body })
-      message.success('Đã lưu hồ sơ thú.')
-      setEditing(null)
-      load()
-    } catch (e) {
-      form.setFields(toFormErrors(e))
-      if (!e.fields || !Object.keys(e.fields).length) message.error(e.message)
-    } finally {
-      setBusy(false)
-    }
+  if (!isCustomer) {
+    const params = new URLSearchParams(window.location.search)
+    return <Navigate to={`/app/khach-hang${params.get('q') ? `?q=${encodeURIComponent(params.get('q'))}` : ''}`} replace />
   }
 
   const hide = async (id) => {
@@ -161,7 +62,16 @@ export default function Pets() {
   const tagMap = Object.fromEntries(tags.map((t) => [t.id, t]))
 
   const columns = [
-    { title: 'Tên', dataIndex: 'name', render: (v) => <b>🐾 {v}</b> },
+    {
+      title: 'Tên',
+      dataIndex: 'name',
+      render: (v, r) => (
+        <Space align="center" size={8}>
+          <PetAvatar species={r.species} size={32} />
+          <b style={{ color: '#0b3d3f', fontSize: 14 }}>{v}</b>
+        </Space>
+      ),
+    },
     ...(isCustomer
       ? []
       : [
@@ -259,11 +169,10 @@ export default function Pets() {
         }}
       />
 
-      {/* ===== DRAWER XEM CHI TIẾT THÚ CƯNG ===== */}
       <Drawer
         title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 22 }}>🐾</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <PetAvatar species={detailPet?.species} size={44} />
             <div>
               <Typography.Text strong style={{ fontSize: 16 }}>Hồ sơ bé cưng: {detailPet?.name}</Typography.Text>
               <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>{SPECIES[detailPet?.species]} · {detailPet?.breed || 'Chưa rõ giống'}</Typography.Text></div>
@@ -307,7 +216,10 @@ export default function Pets() {
           <div>
             <Descriptions bordered column={2} size="small" style={{ marginBottom: 20 }}>
               <Descriptions.Item label="Tên thú cưng" span={2}>
-                <strong style={{ fontSize: 16, color: '#0f8b8d' }}>{detailPet.name}</strong>
+                <Space align="center" size={10}>
+                  <PetAvatar species={detailPet.species} size={36} />
+                  <strong style={{ fontSize: 16, color: '#0f8b8d' }}>{detailPet.name}</strong>
+                </Space>
               </Descriptions.Item>
               <Descriptions.Item label="Chủ nuôi" span={2}>
                 <Typography.Link onClick={() => { setDetailPet(null); nav(`/app/khach-hang?q=${detailPet.client_name}`) }}>
@@ -379,44 +291,7 @@ export default function Pets() {
         )}
       </Drawer>
 
-      <Modal
-        centered
-        open={!!editing} title={editing?.id ? 'Sửa hồ sơ thú' : 'Thêm thú cưng'} width={640}
-        onCancel={() => setEditing(null)} onOk={save} okText="Lưu" cancelText="Hủy"
-        confirmLoading={busy} destroyOnHidden
-      >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }}
-          message="Cân nặng, dị ứng và tiêm phòng giúp spa chọn gói và hóa chất an toàn cho thú." />
-        <Form form={form} layout="vertical">
-          {!isCustomer && (
-            <Form.Item name="client" label="Chủ thú" rules={[{ required: true, message: 'Chọn khách hàng' }]}>
-              <Select showSearch filterOption={false} options={clientOpts} onSearch={searchClients} placeholder="Gõ tên hoặc số điện thoại" />
-            </Form.Item>
-          )}
-          <Space style={{ display: 'flex' }} align="start">
-            <Form.Item name="name" label="Tên thú" rules={[{ required: true, message: 'Nhập tên thú' }]}><Input /></Form.Item>
-            <Form.Item name="species" label="Loài" rules={[{ required: true }]}><Select style={{ width: 100 }} options={opts(SPECIES)} /></Form.Item>
-            <Form.Item name="breed" label="Giống"><Input /></Form.Item>
-          </Space>
-          <Space style={{ display: 'flex' }} align="start">
-            <Form.Item name="coat_type" label="Loại lông"><Select style={{ width: 140 }} options={opts(COAT)} /></Form.Item>
-            <Form.Item name="sex" label="Giới tính"><Select style={{ width: 110 }} options={opts(SEX)} /></Form.Item>
-            <Form.Item name="birth_date" label="Ngày sinh">
-              <DatePicker format="DD/MM/YYYY" disabledDate={(d) => d.isAfter(dayjs())} />
-            </Form.Item>
-            <Form.Item name="weight_kg" label="Cân nặng (kg)" rules={[{ required: true, message: 'Nhập cân nặng' }]}>
-              <InputNumber min={0.1} step={0.1} style={{ width: 120 }} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="health_tags" label="Thẻ sức khỏe / an toàn">
-            <Select mode="multiple" options={tags.map((t) => ({ value: t.id, label: t.name_vi }))} placeholder="Chọn nếu có" />
-          </Form.Item>
-          <Form.Item name="allergy_note" label='Dị ứng (ghi "Không" nếu không có)' rules={[{ required: true, whitespace: true, message: 'Bắt buộc ghi dị ứng' }]}>
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          {!isCustomer && <Form.Item name="safety_note" label="Ghi chú an toàn nội bộ"><Input.TextArea rows={2} /></Form.Item>}
-        </Form>
-      </Modal>
+      <PetFormModal pet={editing} isCustomer onClose={() => setEditing(null)} onSaved={load} />
 
       <VaccinationModal pet={vaccPet} canEdit onClose={() => setVaccPet(null)} onChanged={load} />
 

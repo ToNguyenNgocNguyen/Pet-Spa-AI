@@ -89,7 +89,7 @@ class MeView(APIView):
 
     @transaction.atomic
     def patch(self, request):
-        s = MeUpdateSerializer(data=request.data)
+        s = MeUpdateSerializer(data=request.data, context={'request': request})
         s.is_valid(raise_exception=True)
         d = dict(s.validated_data)
         allow = d.pop('allow_reminders', None)
@@ -105,6 +105,15 @@ class MeView(APIView):
             if allow is not None:
                 client.allow_reminders = allow
             client.save()
+        elif user.role == Role.CUSTOMER:
+            Client.objects.create(
+                user=user,
+                full_name=user.full_name or user.username,
+                phone=user.phone,
+                email=user.email,
+                source=Client.Source.ONLINE,
+                allow_reminders=allow if allow is not None else True,
+            )
         return Response(UserSerializer(user).data)
 
 

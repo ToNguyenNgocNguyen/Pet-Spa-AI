@@ -1,13 +1,14 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
-  Alert, Button, Card, Col, DatePicker, Divider, Empty, Form, Input, Modal, Popconfirm, Row,
-  Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, message,
+  Alert, Avatar, Button, Card, Checkbox, Col, DatePicker, Divider, Dropdown, Empty, Form, Input, Modal, Popconfirm, Row,
+  Select, Space, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography, message,
 } from 'antd'
 import {
-  ClockCircleOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
-  IdcardOutlined, LockOutlined, MailOutlined, PhoneOutlined, PlusOutlined, ReloadOutlined,
-  SafetyCertificateOutlined, TagOutlined, ThunderboltOutlined, ToolOutlined, UserAddOutlined, UserOutlined,
+  CalendarOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, EnvironmentOutlined, ExclamationCircleOutlined,
+  IdcardOutlined, LockOutlined, MailOutlined, MoreOutlined, PhoneOutlined, PlusOutlined, ReloadOutlined,
+  SafetyCertificateOutlined, SearchOutlined, TagOutlined, ThunderboltOutlined, ToolOutlined, UserAddOutlined, UserOutlined,
 } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import { api, toFormErrors, unwrap } from '../api.js'
 import { useAuth, ROLE_LABEL } from '../auth.jsx'
 import RowPerPageSelect from '../components/RowPerPageSelect.jsx'
@@ -23,6 +24,12 @@ const RESOURCE_TYPE_MAP = {
   spa_room: { label: 'Phòng spa', color: 'purple' },
 }
 
+const SPECIES_SCOPE_MAP = {
+  both: { label: 'Chó & Mèo', color: 'cyan', icon: '🐶🐱' },
+  dog: { label: 'Chó', color: 'blue', icon: '🐶' },
+  cat: { label: 'Mèo', color: 'orange', icon: '🐱' },
+}
+
 // Chuyển tiếng Việt có dấu sang slug mã code (vd: "Bác sĩ thú y" -> "bac_si_thu_y")
 const toSlug = (str) => {
   if (!str) return ''
@@ -34,6 +41,57 @@ const toSlug = (str) => {
     .replace(/[^a-z0-9\s_]/g, '')
     .trim()
     .replace(/\s+/g, '_')
+}
+
+// Chuyển tiếng Việt có dấu sang chuỗi không dấu an toàn
+const removeVietnameseAccents = (str) => {
+  if (!str) return ''
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .replace(/[^a-zA-Z0-9\s]/g, '')
+    .trim()
+}
+
+// Sinh các biến thể tên đăng nhập thông minh từ Họ và tên
+const generateUsernameVariants = (fullName) => {
+  const clean = removeVietnameseAccents(fullName).toLowerCase()
+  if (!clean) return []
+
+  const words = clean.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return []
+
+  // 1. Viết liền toàn bộ: vd "Nghien Kieu" -> "nghienkieu", "Nguyen Van An" -> "nguyenvanan"
+  const fullConcat = words.join('')
+
+  // 2. Tên + viết tắt họ đệm: vd "Nguyen Van An" -> "annv", "Nghien Kieu" -> "kieun"
+  let nameInitials = ''
+  if (words.length > 1) {
+    const lastName = words[words.length - 1]
+    const initials = words.slice(0, -1).map((w) => w[0]).join('')
+    nameInitials = `${lastName}${initials}`
+  }
+
+  // 3. Dạng gạch dưới: vd "Nghien Kieu" -> "nghien_kieu"
+  const fullSnake = words.join('_')
+
+  return [fullConcat, nameInitials, fullSnake].filter(
+    (v, i, arr) => v && arr.indexOf(v) === i
+  )
+}
+
+// Lấy username chưa bị trùng trong hệ thống
+const getAvailableUsername = (baseUsername, existingUsernames = []) => {
+  if (!baseUsername) return ''
+  let candidate = baseUsername
+  let counter = 1
+  const set = new Set((existingUsernames || []).map((u) => (u || '').toLowerCase()))
+  while (set.has(candidate.toLowerCase())) {
+    candidate = `${baseUsername}${counter}`
+    counter++
+  }
+  return candidate
 }
 
 // 3 Vai trò hệ thống mặc định - Không thể xóa
@@ -91,8 +149,15 @@ export default function StaffManagement() {
   const [staffModalOpen, setStaffModalOpen] = useState(false)
   const [editingStaff, setEditingStaff] = useState(null)
   const [staffForm] = Form.useForm()
+  const [isUsernameCustomized, setIsUsernameCustomized] = useState(false)
   const [staffDetailModalOpen, setStaffDetailModalOpen] = useState(false)
   const [viewingStaff, setViewingStaff] = useState(null)
+
+  // Tìm kiếm & Bộ lọc Nhân sự
+  const [staffSearch, setStaffSearch] = useState('')
+  const [staffRoleFilter, setStaffRoleFilter] = useState('all')
+  const [staffStatusFilter, setStaffStatusFilter] = useState('all')
+  const [staffSort, setStaffSort] = useState('name_asc')
 
   // Mapping custom role cho từng nhân sự (lưu localStorage)
   const [staffRoleMap, setStaffRoleMap] = useState(() => {
@@ -128,12 +193,20 @@ export default function StaffManagement() {
   const [roleDetailModalOpen, setRoleDetailModalOpen] = useState(false)
   const [viewingRole, setViewingRole] = useState(null)
 
+  // Tìm kiếm & Bộ lọc Vai trò
+  const [roleSearch, setRoleSearch] = useState('')
+  const [roleTypeFilter, setRoleTypeFilter] = useState('all')
+
   // Chuyên môn tay nghề
   const [specModalOpen, setSpecModalOpen] = useState(false)
   const [editingSpec, setEditingSpec] = useState(null)
   const [specForm] = Form.useForm()
   const [specPage, setSpecPage] = useState(1)
   const [specPageSize, setSpecPageSize] = useState(10)
+  const [specSearch, setSpecSearch] = useState('')
+  const [specSpeciesFilter, setSpecSpeciesFilter] = useState('all')
+  const [specDetailModalOpen, setSpecDetailModalOpen] = useState(false)
+  const [viewingSpec, setViewingSpec] = useState(null)
 
   // Ca làm việc & Ngày nghỉ
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
@@ -141,6 +214,16 @@ export default function StaffManagement() {
   const [shifts, setShifts] = useState([])
   const [timeOffList, setTimeOffList] = useState([])
   const [timeOffForm] = Form.useForm()
+  const [weeklyShifts, setWeeklyShifts] = useState([
+    { weekday: 0, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 1, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 2, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 3, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 4, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 5, enabled: true, start_time: '08:00', end_time: '19:00' },
+    { weekday: 6, enabled: true, start_time: '08:00', end_time: '19:00' },
+  ])
+  const [shiftSaving, setShiftSaving] = useState(false)
 
   // Đặt lại mật khẩu nhân viên
   const [resetModalOpen, setResetModalOpen] = useState(false)
@@ -154,7 +237,13 @@ export default function StaffManagement() {
   const [resPage, setResPage] = useState(1)
   const [resPageSize, setResPageSize] = useState(10)
   const [resModalOpen, setResModalOpen] = useState(false)
+  const [editingRes, setEditingRes] = useState(null)
   const [resForm] = Form.useForm()
+
+  // Tìm kiếm & Bộ lọc Tài nguyên
+  const [resSearch, setResSearch] = useState('')
+  const [resTypeFilter, setResTypeFilter] = useState('all')
+  const [resStatusFilter, setResStatusFilter] = useState('all')
 
   const loadStaff = useCallback(async () => {
     setStaffLoading(true)
@@ -202,6 +291,91 @@ export default function StaffManagement() {
     localStorage.setItem('petspa_staff_role_map', JSON.stringify(newMap))
   }
 
+  // Lọc dữ liệu Nhân sự
+  const filteredStaffList = useMemo(() => {
+    return staffList
+      .filter((st) => {
+        const q = staffSearch.trim().toLowerCase()
+        const matchSearch =
+          !q ||
+          (st.full_name || '').toLowerCase().includes(q) ||
+          (st.username || '').toLowerCase().includes(q) ||
+          (st.phone || '').toLowerCase().includes(q) ||
+          (st.email || '').toLowerCase().includes(q)
+
+        const effectiveRole = staffRoleMap[st.id] || st.role
+        const matchRole =
+          staffRoleFilter === 'all' ||
+          effectiveRole === staffRoleFilter ||
+          st.role === staffRoleFilter
+
+        const matchStatus =
+          staffStatusFilter === 'all' ||
+          (staffStatusFilter === 'active' ? st.is_active : !st.is_active)
+
+        return matchSearch && matchRole && matchStatus
+      })
+      .sort((a, b) => {
+        if (staffSort === 'name_asc') {
+          return (a.full_name || a.username).localeCompare(b.full_name || b.username, 'vi')
+        }
+        if (staffSort === 'name_desc') {
+          return (b.full_name || b.username).localeCompare(a.full_name || a.username, 'vi')
+        }
+        if (staffSort === 'newest') {
+          return (b.id || 0) - (a.id || 0)
+        }
+        return 0
+      })
+  }, [staffList, staffSearch, staffRoleFilter, staffStatusFilter, staffSort, staffRoleMap])
+
+  // Lọc danh sách Vai trò
+  const filteredRoles = useMemo(() => {
+    return roles.filter((r) => {
+      const q = roleSearch.trim().toLowerCase()
+      const matchSearch =
+        !q ||
+        (r.name || '').toLowerCase().includes(q) ||
+        (r.code || '').toLowerCase().includes(q) ||
+        (r.description || '').toLowerCase().includes(q)
+
+      const matchType =
+        roleTypeFilter === 'all' ||
+        (roleTypeFilter === 'system' ? r.is_system : !r.is_system)
+
+      return matchSearch && matchType
+    })
+  }, [roles, roleSearch, roleTypeFilter])
+
+  // Lọc danh sách Chuyên môn
+  const filteredSpecialties = useMemo(() => {
+    return specialties.filter((s) => {
+      const q = specSearch.trim().toLowerCase()
+      const matchSearch =
+        !q ||
+        (s.name_vi || '').toLowerCase().includes(q) ||
+        (s.description || '').toLowerCase().includes(q)
+      const matchSpecies =
+        specSpeciesFilter === 'all' ||
+        s.species_scope === specSpeciesFilter ||
+        (specSpeciesFilter !== 'both' && s.species_scope === 'both')
+      return matchSearch && matchSpecies
+    })
+  }, [specialties, specSearch, specSpeciesFilter])
+
+  // Lọc danh sách Tài nguyên
+  const filteredResources = useMemo(() => {
+    return resources.filter((r) => {
+      const q = resSearch.trim().toLowerCase()
+      const matchSearch = !q || (r.name || '').toLowerCase().includes(q)
+      const matchType = resTypeFilter === 'all' || r.resource_type === resTypeFilter
+      const matchStatus =
+        resStatusFilter === 'all' ||
+        (resStatusFilter === 'active' ? r.is_active : !r.is_active)
+      return matchSearch && matchType && matchStatus
+    })
+  }, [resources, resSearch, resTypeFilter, resStatusFilter])
+
   // Tự động sinh mật khẩu ngẫu nhiên an toàn cho modal Thêm nhân viên
   const generateRandomPasswordForNewStaff = () => {
     const prefixes = ['PetSpa', 'SpaAI', 'HappyPet', 'PawsCare', 'ProGroom', 'SpaVet']
@@ -225,6 +399,7 @@ export default function StaffManagement() {
   const openStaffModal = (st = null) => {
     setEditingStaff(st)
     staffForm.resetFields()
+    setIsUsernameCustomized(false)
     if (st) {
       const mappedRole = staffRoleMap[st.id] || st.role
       staffForm.setFieldsValue({
@@ -235,9 +410,18 @@ export default function StaffManagement() {
         role: mappedRole,
         specialties: st.specialties,
         is_active: st.is_active,
+        gender: st.gender || 'male',
+        birthday: st.birthday ? dayjs(st.birthday) : null,
+        address: st.address || '',
       })
     } else {
-      staffForm.setFieldsValue({ role: 'technician', is_active: true })
+      staffForm.setFieldsValue({
+        role: 'technician',
+        is_active: true,
+        gender: 'male',
+        birthday: null,
+        address: '',
+      })
     }
     setStaffModalOpen(true)
   }
@@ -252,6 +436,9 @@ export default function StaffManagement() {
       const payload = {
         ...values,
         role: baseRole,
+        birthday: values.birthday ? values.birthday.format('YYYY-MM-DD') : null,
+        gender: values.gender || 'other',
+        address: values.address ? values.address.trim() : '',
       }
 
       if (editingStaff) {
@@ -315,18 +502,40 @@ export default function StaffManagement() {
     }
   }
 
-  // Khóa nhân viên
+  // Khóa / Mở khóa nhân viên
   const toggleStaffActive = async (st) => {
-    try {
-      if (st.is_active) {
-        await api(`/staff/${st.id}`, { method: 'DELETE' })
-      } else {
-        await api(`/staff/${st.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: true }) })
+    if (st.user_id === user?.id || st.username === user?.username) {
+      message.warning('Bạn không thể tự khóa tài khoản của chính mình.')
+      return
+    }
+
+    const doToggle = async () => {
+      try {
+        if (st.is_active) {
+          await api(`/staff/${st.id}`, { method: 'DELETE' })
+        } else {
+          await api(`/staff/${st.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: true }) })
+        }
+        message.success(`Đã ${st.is_active ? 'khóa' : 'kích hoạt'} tài khoản nhân viên ${st.full_name || st.username}`)
+        loadStaff()
+      } catch (e) {
+        message.error(e.message || 'Thao tác không thành công')
       }
-      message.success('Đã cập nhật trạng thái nhân viên')
-      loadStaff()
-    } catch (e) {
-      message.error(e.message || 'Thao tác không thành công')
+    }
+
+    if (st.is_active) {
+      Modal.confirm({
+        title: `Khóa tài khoản ${st.full_name || st.username}?`,
+        icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
+        content: 'Nhân viên này sẽ không thể đăng nhập vào hệ thống spa nữa.',
+        okText: 'Khóa tài khoản',
+        okType: 'danger',
+        cancelText: 'Hủy',
+        centered: true,
+        onOk: doToggle,
+      })
+    } else {
+      doToggle()
     }
   }
 
@@ -334,15 +543,73 @@ export default function StaffManagement() {
   const openShifts = async (st) => {
     setShiftStaff(st)
     setShiftModalOpen(true)
+    setShiftSaving(false)
     try {
       const [shs, tos] = await Promise.all([
         api(`/staff/${st.id}/shifts`),
         api(`/staff/${st.id}/time-off`),
       ])
-      setShifts(shs)
-      setTimeOffList(tos)
+      const shList = unwrap(shs) || []
+      const toList = unwrap(tos) || []
+      setShifts(shList)
+      setTimeOffList(toList)
+
+      const initialWeekly = Array.from({ length: 7 }, (_, i) => {
+        const found = shList.find((s) => s.weekday === i)
+        return {
+          weekday: i,
+          enabled: !!found,
+          start_time: found?.start_time ? found.start_time.slice(0, 5) : '08:00',
+          end_time: found?.end_time ? found.end_time.slice(0, 5) : '19:00',
+        }
+      })
+      setWeeklyShifts(initialWeekly)
     } catch {
       // ignore
+    }
+  }
+
+  // Áp dụng cấu hình ca nhanh
+  const applyShiftPreset = (type) => {
+    setWeeklyShifts((prev) =>
+      prev.map((d) => {
+        if (type === 'all') {
+          return { ...d, enabled: true, start_time: '08:00', end_time: '19:00' }
+        }
+        if (type === 'mon_sat') {
+          return { ...d, enabled: d.weekday < 6, start_time: '08:00', end_time: '19:00' }
+        }
+        if (type === 'mon_fri') {
+          return { ...d, enabled: d.weekday < 5, start_time: '08:00', end_time: '18:00' }
+        }
+        return d
+      })
+    )
+  }
+
+  // Lưu lịch ca làm việc trong tuần
+  const saveShifts = async () => {
+    if (!shiftStaff) return
+    setShiftSaving(true)
+    try {
+      const payload = weeklyShifts
+        .filter((d) => d.enabled)
+        .map((d) => ({
+          weekday: d.weekday,
+          start_time: d.start_time,
+          end_time: d.end_time,
+        }))
+      const updated = await api(`/staff/${shiftStaff.id}/shifts`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      })
+      const data = unwrap(updated) || payload
+      setShifts(data)
+      message.success(`Đã cập nhật ca làm việc cho ${shiftStaff.full_name || shiftStaff.username}!`)
+    } catch (e) {
+      message.error(e.message || 'Lỗi khi cập nhật ca làm việc')
+    } finally {
+      setShiftSaving(false)
     }
   }
 
@@ -360,7 +627,7 @@ export default function StaffManagement() {
       message.success('Đã đăng ký ngày nghỉ')
       timeOffForm.resetFields()
       const tos = await api(`/staff/${shiftStaff.id}/time-off`)
-      setTimeOffList(tos)
+      setTimeOffList(unwrap(tos) || [])
     } catch (e) {
       message.error(e.message || 'Lỗi khi đăng ký ngày nghỉ')
     }
@@ -388,7 +655,6 @@ export default function StaffManagement() {
     if (role) {
       roleForm.setFieldsValue({
         name: role.name,
-        code: role.code,
         description: role.description,
         color: role.color || 'blue',
       })
@@ -403,16 +669,16 @@ export default function StaffManagement() {
   const saveRole = async () => {
     try {
       const values = await roleForm.validateFields()
-      const codeClean = (values.code || toSlug(values.name)).trim().toLowerCase().replace(/\s+/g, '_')
+      const roleName = values.name.trim()
 
       if (editingRole) {
         // Cập nhật vai trò (Vai trò hệ thống giữ nguyên tên, mã)
-        const roleName = editingRole.is_system ? editingRole.name : values.name.trim()
+        const updatedName = editingRole.is_system ? editingRole.name : roleName
         const updated = roles.map((r) => {
           if (r.code === editingRole.code) {
             return {
               ...r,
-              name: roleName,
+              name: updatedName,
               description: values.description || '',
               color: values.color,
             }
@@ -420,27 +686,29 @@ export default function StaffManagement() {
           return r
         })
         persistRoles(updated)
-        // Cập nhật viewingRole nếu đang mở modal chi tiết
         if (viewingRole?.code === editingRole.code) {
           setViewingRole(updated.find((r) => r.code === editingRole.code))
         }
-        message.success(`Đã cập nhật vai trò "${roleName}"!`)
+        message.success(`Đã cập nhật vai trò "${updatedName}"!`)
       } else {
-        // Kiểm tra mã trùng
-        if (roles.some((r) => r.code === codeClean)) {
-          roleForm.setFields([{ name: 'code', errors: ['Mã vai trò này đã tồn tại trong hệ thống!'] }])
-          return
+        // Tự động sinh mã vai trò chuẩn hóa ở BE / nền mà không cần người dùng nhập
+        let baseCode = toSlug(roleName) || 'vai_tro'
+        let codeClean = baseCode
+        let counter = 1
+        while (roles.some((r) => r.code === codeClean)) {
+          codeClean = `${baseCode}_${counter++}`
         }
+
         const newRole = {
           code: codeClean,
-          name: values.name.trim(),
+          name: roleName,
           base_role: 'technician',
           description: values.description || '',
           color: values.color,
           is_system: false,
         }
         persistRoles([...roles, newRole])
-        message.success(`Đã thêm vai trò mới "${values.name}"!`)
+        message.success(`Đã thêm vai trò mới "${roleName}"!`)
       }
       setRoleModalOpen(false)
     } catch (e) {
@@ -461,7 +729,7 @@ export default function StaffManagement() {
       content: (
         <div>
           <Paragraph style={{ marginBottom: 8 }}>
-            Bạn có chắc chắn muốn xóa vai trò <b>"{role.name}"</b> (Mã: <code>{role.code}</code>) không?
+            Bạn có chắc chắn muốn xóa vai trò <b>"{role.name}"</b> không?
           </Paragraph>
           <Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 0 }}>
             Sau khi xóa, các nhân sự đang giữ vai trò này sẽ tự động chuyển về vai trò Kỹ thuật viên mặc định. Hành động này không thể hoàn tác!
@@ -490,13 +758,24 @@ export default function StaffManagement() {
   }
 
   // ===== QUẢN LÝ CHUYÊN MÔN TAY NGHỀ =====
+  const openSpecDetails = (spec) => {
+    setViewingSpec(spec)
+    setSpecDetailModalOpen(true)
+  }
+
   const openSpecModal = (spec = null) => {
     setEditingSpec(spec)
     specForm.resetFields()
     if (spec) {
       specForm.setFieldsValue({
         name_vi: spec.name_vi,
-        code: spec.code,
+        species_scope: spec.species_scope || 'both',
+        description: spec.description || '',
+      })
+    } else {
+      specForm.setFieldsValue({
+        species_scope: 'both',
+        description: '',
       })
     }
     setSpecModalOpen(true)
@@ -505,17 +784,35 @@ export default function StaffManagement() {
   const saveSpecialty = async () => {
     try {
       const values = await specForm.validateFields()
-      const payload = {
-        name_vi: values.name_vi.trim(),
-        code: (values.code || '').trim().toLowerCase().replace(/\s+/g, '_'),
-      }
+      const nameVi = values.name_vi.trim()
 
       if (editingSpec) {
+        const payload = {
+          name_vi: nameVi,
+          species_scope: values.species_scope || 'both',
+          description: (values.description || '').trim(),
+        }
         await api(`/specialties/${editingSpec.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
-        message.success(`Cập nhật chuyên môn "${payload.name_vi}" thành công!`)
+        if (viewingSpec?.id === editingSpec.id) {
+          setViewingSpec({ ...viewingSpec, ...payload })
+        }
+        message.success(`Cập nhật chuyên môn "${nameVi}" thành công!`)
       } else {
+        // Tự động sinh mã chuyên môn chuẩn hóa ngầm ở BE mà không cần người dùng nhập
+        let baseCode = toSlug(nameVi) || 'chuyen_mon'
+        let codeClean = baseCode
+        let counter = 1
+        while (specialties.some((s) => s.code === codeClean)) {
+          codeClean = `${baseCode}_${counter++}`
+        }
+        const payload = {
+          name_vi: nameVi,
+          code: codeClean,
+          species_scope: values.species_scope || 'both',
+          description: (values.description || '').trim(),
+        }
         await api('/specialties', { method: 'POST', body: JSON.stringify(payload) })
-        message.success(`Thêm chuyên môn mới "${payload.name_vi}" thành công!`)
+        message.success(`Thêm chuyên môn mới "${nameVi}" thành công!`)
       }
       setSpecModalOpen(false)
       loadStaff()
@@ -534,7 +831,7 @@ export default function StaffManagement() {
       content: (
         <div>
           <Paragraph style={{ marginBottom: 8 }}>
-            Bạn có chắc chắn muốn xóa chuyên môn <b>"{spec.name_vi}"</b> (Mã: <code>{spec.code}</code>) không?
+            Bạn có chắc chắn muốn xóa chuyên môn <b>"{spec.name_vi}"</b> không?
           </Paragraph>
           <Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 0 }}>
             Chuyên môn này sẽ bị gỡ bỏ khỏi danh mục kỹ năng của tất cả kỹ thuật viên đang sở hữu. Hành động này không thể hoàn tác!
@@ -557,27 +854,82 @@ export default function StaffManagement() {
   }
 
   // ===== QUẢN LÝ TÀI NGUYÊN =====
+  const openResModal = (r = null) => {
+    setEditingRes(r)
+    resForm.resetFields()
+    if (r) {
+      resForm.setFieldsValue({
+        name: r.name,
+        resource_type: r.resource_type,
+      })
+    } else {
+      resForm.setFieldsValue({
+        resource_type: 'bath_tub',
+      })
+    }
+    setResModalOpen(true)
+  }
+
   const saveResource = async () => {
     try {
       const v = await resForm.validateFields()
-      await api('/resources', { method: 'POST', body: JSON.stringify(v) })
-      message.success('Đã thêm tài nguyên mới')
+      if (editingRes) {
+        await api(`/resources/${editingRes.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(v),
+        })
+        message.success(`Cập nhật tài nguyên "${v.name}" thành công!`)
+      } else {
+        await api('/resources', {
+          method: 'POST',
+          body: JSON.stringify(v),
+        })
+        message.success(`Đã thêm tài nguyên mới "${v.name}"!`)
+      }
       setResModalOpen(false)
       resForm.resetFields()
       loadResources()
     } catch (e) {
-      message.error(e.message || 'Lỗi khi thêm tài nguyên')
+      message.error(e.message || 'Lỗi khi lưu tài nguyên')
     }
+  }
+
+  const confirmDeleteResource = (r) => {
+    Modal.confirm({
+      title: 'Xác nhận xóa cơ sở vật chất',
+      icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
+      content: (
+        <div>
+          <Paragraph style={{ marginBottom: 8 }}>
+            Bạn có chắc chắn muốn xóa vĩnh viễn cơ sở vật chất <b>"{r.name}"</b> ({RESOURCE_TYPE_MAP[r.resource_type]?.label || r.resource_type}) không?
+          </Paragraph>
+          <Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 0 }}>
+            Hành động này sẽ xóa hoàn toàn cơ sở vật chất khỏi hệ thống. Nếu đang có lịch hẹn sắp tới sử dụng tài nguyên này, hệ thống sẽ ngăn chặn để đảm bảo an toàn.
+          </Paragraph>
+        </div>
+      ),
+      okText: 'Xác nhận xóa',
+      okType: 'danger',
+      cancelText: 'Hủy',
+      async onOk() {
+        try {
+          await api(`/resources/${r.id}`, { method: 'DELETE' })
+          message.success(`Đã xóa cơ sở vật chất "${r.name}" thành công!`)
+          loadResources()
+        } catch (e) {
+          message.error(e.message || 'Lỗi khi xóa cơ sở vật chất')
+        }
+      },
+    })
   }
 
   const toggleResourceActive = async (r) => {
     try {
-      if (r.is_active) {
-        await api(`/resources/${r.id}`, { method: 'DELETE' })
-      } else {
-        await api(`/resources/${r.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: true }) })
-      }
-      message.success('Đã cập nhật trạng thái tài nguyên')
+      await api(`/resources/${r.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: !r.is_active }),
+      })
+      message.success(`Đã ${!r.is_active ? 'kích hoạt' : 'tạm ngưng'} tài nguyên "${r.name}"`)
       loadResources()
     } catch (e) {
       message.error(e.message || 'Lỗi thao tác')
@@ -590,9 +942,26 @@ export default function StaffManagement() {
       title: 'Họ tên',
       key: 'name',
       render: (_, st) => (
-        <div>
-          <Text strong style={{ fontSize: 14 }}>{st.full_name || st.username}</Text>
-          <div><Text type="secondary" style={{ fontSize: 12 }}>@{st.username}</Text></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Avatar style={{ background: '#0f8b8d', flexShrink: 0 }} icon={<UserOutlined />} />
+          <div>
+            <Text strong style={{ fontSize: 14, color: '#0b3d3f', display: 'block' }}>{st.full_name || st.username}</Text>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+              {st.gender && st.gender !== 'other' && (
+                <Tag
+                  color={st.gender === 'male' ? 'blue' : 'magenta'}
+                  style={{ fontSize: 11, lineHeight: '18px', padding: '0 6px', margin: 0, borderRadius: 4 }}
+                >
+                  {st.gender === 'male' ? 'Nam' : 'Nữ'}
+                </Tag>
+              )}
+              {st.birthday && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {dayjs(st.birthday).format('DD/MM/YYYY')} ({dayjs().diff(dayjs(st.birthday), 'year')}t)
+                </Text>
+              )}
+            </div>
+          </div>
         </div>
       ),
     },
@@ -615,7 +984,12 @@ export default function StaffManagement() {
       render: (_, st) => (
         <div>
           <div><Text strong style={{ color: '#0f8b8d' }}>{st.phone || '—'}</Text></div>
-          <Text type="secondary" style={{ fontSize: 12 }}>{st.email || ''}</Text>
+          {st.email && <Text type="secondary" style={{ fontSize: 12 }}>{st.email}</Text>}
+          {st.address && (
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={st.address}>
+              📍 {st.address}
+            </div>
+          )}
         </div>
       ),
     },
@@ -634,46 +1008,110 @@ export default function StaffManagement() {
     {
       title: 'Trạng thái',
       dataIndex: 'is_active',
-      render: (active, st) => (
-        <Switch
-          checked={active}
-          disabled={!isManager}
-          onChange={() => toggleStaffActive(st)}
-          checkedChildren="Hoạt động"
-          unCheckedChildren="Đã khóa"
-        />
-      ),
+      render: (active, st) => {
+        const isSelf = st.user_id === user?.id || st.username === user?.username
+        return (
+          <span onClick={(e) => e.stopPropagation()}>
+            <Tooltip title={isSelf ? 'Không thể tự khóa tài khoản đang đăng nhập' : ''}>
+              <Switch
+                checked={active}
+                disabled={!isManager || isSelf}
+                onClick={(_, e) => e?.stopPropagation?.()}
+                onChange={() => toggleStaffActive(st)}
+                checkedChildren="Hoạt động"
+                unCheckedChildren="Đã khóa"
+              />
+            </Tooltip>
+          </span>
+        )
+      },
     },
     {
       title: 'Thao tác',
       key: 'act',
-      render: (_, st) => (
-        <Space onClick={(e) => e.stopPropagation()}>
-          <Button size="small" icon={<ClockCircleOutlined />} onClick={(e) => { e.stopPropagation(); openShifts(st) }}>
-            Ca & Nghỉ
-          </Button>
-          {isManager && (
-            <>
-              <Button size="small" icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); openStaffModal(st) }}>
-                Sửa
-              </Button>
-              <Button
-                size="small"
-                icon={<LockOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setResetTargetUser(st)
-                  resetForm.resetFields()
-                  setResetModalOpen(true)
-                }}
-                title="Đặt lại mật khẩu cho nhân viên"
+      width: 120,
+      render: (_, st) => {
+        const isSelf = st.user_id === user?.id || st.username === user?.username
+        const moreItems = [
+          {
+            key: 'shifts',
+            label: 'Lịch ca & Nghỉ phép',
+            icon: <ClockCircleOutlined />,
+            onClick: () => openShifts(st),
+          },
+          {
+            key: 'detail',
+            label: 'Xem hồ sơ chi tiết',
+            icon: <IdcardOutlined />,
+            onClick: () => {
+              setViewingStaff(st)
+              setStaffDetailModalOpen(true)
+            },
+          },
+          ...(isManager
+            ? [
+                {
+                  type: 'divider',
+                },
+                {
+                  key: 'reset-pwd',
+                  label: 'Đổi mật khẩu',
+                  icon: <LockOutlined />,
+                  onClick: () => {
+                    setResetTargetUser(st)
+                    resetForm.resetFields()
+                    setResetModalOpen(true)
+                  },
+                },
+                ...(!isSelf
+                  ? [
+                      {
+                        key: 'toggle-active',
+                        label: st.is_active ? 'Khóa tài khoản' : 'Kích hoạt tài khoản',
+                        icon: <LockOutlined />,
+                        danger: st.is_active,
+                        onClick: () => toggleStaffActive(st),
+                      },
+                    ]
+                  : []),
+              ]
+            : []),
+        ]
+
+        return (
+          <Space size={6} onClick={(e) => e.stopPropagation()}>
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (isManager) {
+                  openStaffModal(st)
+                } else {
+                  setViewingStaff(st)
+                  setStaffDetailModalOpen(true)
+                }
+              }}
+              style={{ borderRadius: 6 }}
+            >
+              {isManager ? 'Sửa' : 'Xem'}
+            </Button>
+            <span onClick={(e) => e.stopPropagation()}>
+              <Dropdown
+                menu={{ items: moreItems }}
+                trigger={['click']}
+                placement="bottomRight"
               >
-                Đổi MK
-              </Button>
-            </>
-          )}
-        </Space>
-      ),
+                <Button
+                  size="small"
+                  icon={<MoreOutlined />}
+                  style={{ borderRadius: 6, padding: '0 8px' }}
+                />
+              </Dropdown>
+            </span>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -683,6 +1121,7 @@ export default function StaffManagement() {
       title: 'Tên vai trò',
       dataIndex: 'name',
       key: 'name',
+      width: 220,
       render: (name, r) => (
         <Space>
           <Tag color={r.color || 'blue'} style={{ fontSize: 13, padding: '2px 8px' }}>{name}</Tag>
@@ -693,10 +1132,23 @@ export default function StaffManagement() {
       ),
     },
     {
-      title: 'Mã định danh (Code)',
-      dataIndex: 'code',
-      key: 'code',
-      render: (code) => <Text code>{code}</Text>,
+      title: 'Mô tả vai trò',
+      dataIndex: 'description',
+      key: 'description',
+      render: (desc) => desc || <Text type="secondary">—</Text>,
+    },
+    {
+      title: 'Nhân sự đảm nhận',
+      key: 'staff_count',
+      width: 180,
+      render: (_, r) => {
+        const count = staffList.filter((st) => (staffRoleMap[st.id] || st.role) === r.code).length
+        return (
+          <Tag color={count > 0 ? 'cyan' : 'default'} style={{ fontSize: 12 }}>
+            {count} nhân sự
+          </Tag>
+        )
+      },
     },
     {
       title: 'Thao tác',
@@ -744,21 +1196,52 @@ export default function StaffManagement() {
       title: 'Tên chuyên môn tay nghề',
       dataIndex: 'name_vi',
       key: 'name_vi',
+      width: 200,
       render: (name) => <Text strong style={{ color: '#0f8b8d', fontSize: 14 }}>{name}</Text>,
     },
     {
-      title: 'Mã chuyên môn (Code)',
-      dataIndex: 'code',
-      key: 'code',
-      render: (code) => <Text code>{code}</Text>,
+      title: 'Áp dụng loài',
+      dataIndex: 'species_scope',
+      key: 'species_scope',
+      width: 140,
+      render: (scope) => {
+        const item = SPECIES_SCOPE_MAP[scope] || SPECIES_SCOPE_MAP.both
+        return (
+          <Tag color={item.color} style={{ fontSize: 12, padding: '2px 8px', borderRadius: 6 }}>
+            {item.icon} {item.label}
+          </Tag>
+        )
+      },
+    },
+    {
+      title: 'Mô tả phạm vi kỹ năng & công việc',
+      dataIndex: 'description',
+      key: 'description',
+      ellipsis: true,
+      render: (desc) => (
+        <Tooltip title={desc || 'Chưa có mô tả chi tiết'}>
+          <Text
+            ellipsis
+            style={{
+              color: '#475569',
+              fontSize: 13,
+              maxWidth: 380,
+              display: 'inline-block',
+            }}
+          >
+            {desc || <Text type="secondary" italic>Chưa có mô tả chi tiết</Text>}
+          </Text>
+        </Tooltip>
+      ),
     },
     {
       title: 'Số nhân sự sở hữu',
       key: 'staff_count',
+      width: 160,
       render: (_, spec) => {
         const count = staffList.filter((st) => (st.specialties || []).includes(spec.id)).length
         return (
-          <Tag color={count > 0 ? 'geekblue' : 'default'}>
+          <Tag color={count > 0 ? 'geekblue' : 'default'} style={{ fontSize: 12 }}>
             {count} kỹ thuật viên
           </Tag>
         )
@@ -767,13 +1250,16 @@ export default function StaffManagement() {
     {
       title: 'Thao tác',
       key: 'act',
-      width: 140,
+      width: 130,
       render: (_, spec) => (
         <Space onClick={(e) => e.stopPropagation()}>
           <Button
             size="small"
             icon={<EditOutlined />}
-            onClick={() => openSpecModal(spec)}
+            onClick={(e) => {
+              e.stopPropagation()
+              openSpecModal(spec)
+            }}
             disabled={!isManager}
           >
             Sửa
@@ -784,7 +1270,10 @@ export default function StaffManagement() {
               danger
               icon={<DeleteOutlined />}
               disabled={!isManager}
-              onClick={() => confirmDeleteSpecialty(spec)}
+              onClick={(e) => {
+                e.stopPropagation()
+                confirmDeleteSpecialty(spec)
+              }}
             />
           </Tooltip>
         </Space>
@@ -794,26 +1283,68 @@ export default function StaffManagement() {
 
   // Bảng tài nguyên
   const resColumns = [
-    { title: 'Tên tài nguyên', dataIndex: 'name', render: (n) => <Text strong>{n}</Text> },
+    {
+      title: 'Tên tài nguyên',
+      dataIndex: 'name',
+      key: 'name',
+      render: (n) => <Text strong style={{ fontSize: 14 }}>{n}</Text>,
+    },
     {
       title: 'Phân loại',
       dataIndex: 'resource_type',
+      key: 'resource_type',
       render: (t) => {
         const item = RESOURCE_TYPE_MAP[t] || { label: t, color: 'default' }
-        return <Tag color={item.color}>{item.label}</Tag>
+        return <Tag color={item.color} style={{ fontSize: 13, padding: '2px 8px' }}>{item.label}</Tag>
       },
     },
     {
       title: 'Trạng thái hoạt động',
       dataIndex: 'is_active',
+      key: 'is_active',
       render: (active, r) => (
-        <Switch
-          checked={active}
-          disabled={!isManager}
-          onChange={() => toggleResourceActive(r)}
-          checkedChildren="Sẵn sàng"
-          unCheckedChildren="Tạm ngưng"
-        />
+        <span onClick={(e) => e.stopPropagation()}>
+          <Switch
+            checked={active}
+            disabled={!isManager}
+            onClick={(_, e) => e?.stopPropagation?.()}
+            onChange={() => toggleResourceActive(r)}
+            checkedChildren="Sẵn sàng"
+            unCheckedChildren="Tạm ngưng"
+          />
+        </span>
+      ),
+    },
+    {
+      title: 'Thao tác',
+      key: 'act',
+      width: 140,
+      render: (_, r) => (
+        <Space onClick={(e) => e.stopPropagation()}>
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={(e) => {
+              e.stopPropagation()
+              openResModal(r)
+            }}
+            disabled={!isManager}
+          >
+            Sửa
+          </Button>
+          <Tooltip title="Xóa vĩnh viễn cơ sở vật chất">
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!isManager}
+              onClick={(e) => {
+                e.stopPropagation()
+                confirmDeleteResource(r)
+              }}
+            />
+          </Tooltip>
+        </Space>
       ),
     },
   ]
@@ -832,22 +1363,24 @@ export default function StaffManagement() {
           <Button icon={<ReloadOutlined />} onClick={() => { loadStaff(); loadResources() }}>Làm mới</Button>
           {isManager && (
             <>
-              <Button type="primary" icon={<UserAddOutlined />} onClick={() => openStaffModal(null)}>
-                Thêm nhân viên
-              </Button>
+              {activeTab === 'staff' && (
+                <Button type="primary" icon={<UserAddOutlined />} onClick={() => openStaffModal(null)}>
+                  Thêm nhân viên
+                </Button>
+              )}
               {activeTab === 'roles' && (
-                <Button icon={<SafetyCertificateOutlined />} onClick={() => openRoleModal(null)}>
-                  Thêm vai trò
+                <Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => openRoleModal(null)}>
+                  Thêm vai trò mới
                 </Button>
               )}
               {activeTab === 'specialties' && (
-                <Button icon={<TagOutlined />} onClick={() => openSpecModal(null)}>
-                  Thêm chuyên môn
+                <Button type="primary" icon={<TagOutlined />} onClick={() => openSpecModal(null)}>
+                  Thêm chuyên môn mới
                 </Button>
               )}
               {activeTab === 'resources' && (
-                <Button icon={<ToolOutlined />} onClick={() => setResModalOpen(true)}>
-                  Thêm tài nguyên
+                <Button type="primary" icon={<ToolOutlined />} onClick={() => openResModal(null)}>
+                  Thêm tài nguyên mới
                 </Button>
               )}
             </>
@@ -865,13 +1398,90 @@ export default function StaffManagement() {
             label: (<span><UserOutlined /> Đội ngũ nhân sự ({staffList.length})</span>),
             children: (
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>💡 Bấm vào bất kỳ nhân viên nào để xem chi tiết thông tin hồ sơ nhân sự</Text>
-                  <RowPerPageSelect value={staffPageSize} onChange={(ps) => { setStaffPageSize(ps); setStaffPage(1) }} />
+                {/* Thanh tìm kiếm & bộ lọc Nhân sự */}
+                <div
+                  style={{
+                    background: '#fff',
+                    padding: '12px 16px',
+                    borderRadius: 10,
+                    border: '1px solid #e8f0f0',
+                    marginBottom: 12,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                  }}
+                >
+                  <Space wrap size={10} style={{ flex: 1 }}>
+                    <Input
+                      placeholder="Tìm theo họ tên, @username, SĐT, email..."
+                      prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                      allowClear
+                      value={staffSearch}
+                      onChange={(e) => {
+                        setStaffSearch(e.target.value)
+                        setStaffPage(1)
+                      }}
+                      style={{ width: 280 }}
+                    />
+
+                    <Select
+                      placeholder="Vai trò nhân sự"
+                      value={staffRoleFilter}
+                      onChange={(val) => {
+                        setStaffRoleFilter(val)
+                        setStaffPage(1)
+                      }}
+                      style={{ width: 170 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả vai trò' },
+                        ...roles.map((r) => ({
+                          value: r.code,
+                          label: `${r.name}${r.is_system ? ' (Hệ thống)' : ''}`,
+                        })),
+                      ]}
+                    />
+
+                    <Select
+                      placeholder="Trạng thái"
+                      value={staffStatusFilter}
+                      onChange={(val) => {
+                        setStaffStatusFilter(val)
+                        setStaffPage(1)
+                      }}
+                      style={{ width: 160 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả trạng thái' },
+                        { value: 'active', label: '🟢 Đang hoạt động' },
+                        { value: 'inactive', label: '🔴 Đã khóa' },
+                      ]}
+                    />
+
+                    <Select
+                      placeholder="Sắp xếp"
+                      value={staffSort}
+                      onChange={(val) => setStaffSort(val)}
+                      style={{ width: 150 }}
+                      options={[
+                        { value: 'name_asc', label: 'Tên: A → Z' },
+                        { value: 'name_desc', label: 'Tên: Z → A' },
+                        { value: 'newest', label: 'Mới nhất' },
+                      ]}
+                    />
+                  </Space>
+
+                  <Space size={12}>
+                    <Text type="secondary" style={{ fontSize: 13 }}>
+                      Tổng số: <b>{filteredStaffList.length}</b> / {staffList.length} nhân sự
+                    </Text>
+                    <RowPerPageSelect value={staffPageSize} onChange={(ps) => { setStaffPageSize(ps); setStaffPage(1) }} />
+                  </Space>
                 </div>
+
                 <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden' }}>
                   <Table
-                    dataSource={staffList}
+                    dataSource={filteredStaffList}
                     columns={staffColumns}
                     rowKey="id"
                     loading={staffLoading}
@@ -899,22 +1509,58 @@ export default function StaffManagement() {
             label: (<span><SafetyCertificateOutlined /> Vai trò ({roles.length})</span>),
             children: (
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>
-                    💡 Bấm vào bất kỳ vai trò nào để xem chi tiết. 3 vai trò hệ thống mặc định (Quản lý, Kỹ thuật viên, Lễ tân) được bảo vệ tên và quyền hạn.
-                  </Text>
-                  <Space>
-                    {isManager && (
-                      <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openRoleModal(null)}>
-                        Thêm vai trò mới
-                      </Button>
-                    )}
+                {/* Thanh tìm kiếm & bộ lọc Vai trò */}
+                <div
+                  style={{
+                    background: '#fff',
+                    padding: '12px 16px',
+                    borderRadius: 10,
+                    border: '1px solid #e8f0f0',
+                    marginBottom: 12,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                  }}
+                >
+                  <Space wrap size={10} style={{ flex: 1 }}>
+                    <Input
+                      placeholder="Tìm theo tên vai trò, mô tả..."
+                      prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                      allowClear
+                      value={roleSearch}
+                      onChange={(e) => {
+                        setRoleSearch(e.target.value)
+                        setRolePage(1)
+                      }}
+                      style={{ width: 280 }}
+                    />
+
+                    <Select
+                      placeholder="Loại vai trò"
+                      value={roleTypeFilter}
+                      onChange={(val) => {
+                        setRoleTypeFilter(val)
+                        setRolePage(1)
+                      }}
+                      style={{ width: 170 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả loại vai trò' },
+                        { value: 'system', label: '🔒 Hệ thống mặc định' },
+                        { value: 'custom', label: '✨ Vai trò tùy chỉnh' },
+                      ]}
+                    />
+                  </Space>
+
+                  <Space size={12}>
                     <RowPerPageSelect value={rolePageSize} onChange={(ps) => { setRolePageSize(ps); setRolePage(1) }} />
                   </Space>
                 </div>
+
                 <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden' }}>
                   <Table
-                    dataSource={roles}
+                    dataSource={filteredRoles}
                     columns={roleColumns}
                     rowKey="code"
                     rowClassName={() => 'clickable-row'}
@@ -940,25 +1586,67 @@ export default function StaffManagement() {
             label: (<span><TagOutlined /> Chuyên môn tay nghề ({specialties.length})</span>),
             children: (
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>
-                    ✂️ Danh mục chuyên môn kỹ thuật tay nghề gán cho nhân sự spa (tắm, cắt tỉa tạo kiểu, spa mèo...).
-                  </Text>
-                  <Space>
-                    {isManager && (
-                      <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openSpecModal(null)}>
-                        Thêm chuyên môn mới
-                      </Button>
-                    )}
+                {/* Thanh tìm kiếm Chuyên môn */}
+                <div
+                  style={{
+                    background: '#fff',
+                    padding: '12px 16px',
+                    borderRadius: 10,
+                    border: '1px solid #e8f0f0',
+                    marginBottom: 12,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                  }}
+                >
+                  <Space wrap size={10} style={{ flex: 1 }}>
+                    <Input
+                      placeholder="Tìm theo tên kỹ năng, mô tả..."
+                      prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                      allowClear
+                      value={specSearch}
+                      onChange={(e) => {
+                        setSpecSearch(e.target.value)
+                        setSpecPage(1)
+                      }}
+                      style={{ width: 280 }}
+                    />
+
+                    <Select
+                      placeholder="Áp dụng loài"
+                      value={specSpeciesFilter}
+                      onChange={(val) => {
+                        setSpecSpeciesFilter(val)
+                        setSpecPage(1)
+                      }}
+                      style={{ width: 170 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả loài' },
+                        { value: 'both', label: '🐶🐱 Chó & Mèo' },
+                        { value: 'dog', label: '🐶 Chỉ cho Chó' },
+                        { value: 'cat', label: '🐱 Chỉ cho Mèo' },
+                      ]}
+                    />
+                  </Space>
+
+                  <Space size={12}>
                     <RowPerPageSelect value={specPageSize} onChange={(ps) => { setSpecPageSize(ps); setSpecPage(1) }} />
                   </Space>
                 </div>
+
                 <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden' }}>
                   <Table
-                    dataSource={specialties}
+                    dataSource={filteredSpecialties}
                     columns={specialtyColumns}
                     rowKey="id"
                     scroll={{ x: 'max-content' }}
+                    rowClassName={() => 'clickable-row'}
+                    onRow={(record) => ({
+                      onClick: () => openSpecDetails(record),
+                      style: { cursor: 'pointer' },
+                    })}
                     pagination={{
                       position: ['bottomRight'],
                       current: specPage,
@@ -985,7 +1673,7 @@ export default function StaffManagement() {
                         <Card size="small" style={{ borderRadius: 12 }}>
                           <Text type="secondary">{item.label}</Text>
                           <div style={{ fontSize: 24, fontWeight: 800, color: '#0f8b8d' }}>
-                            {count} <span style={{ fontSize: 13, fontWeight: 400, color: '#6b7280' }}>vị trí</span>
+                            {count} <span style={{ fontSize: 13, fontWeight: 400, color: '#6b7280' }}>vị trí sẵn sàng</span>
                           </div>
                         </Card>
                       </Col>
@@ -993,21 +1681,75 @@ export default function StaffManagement() {
                   })}
                 </Row>
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>💡 Danh sách vị trí cơ sở vật chất spa</Text>
-                  <Space>
-                    {isManager && (
-                      <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => setResModalOpen(true)}>
-                        Thêm tài nguyên mới
-                      </Button>
-                    )}
+                {/* Thanh tìm kiếm & bộ lọc Tài nguyên */}
+                <div
+                  style={{
+                    background: '#fff',
+                    padding: '12px 16px',
+                    borderRadius: 10,
+                    border: '1px solid #e8f0f0',
+                    marginBottom: 12,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                  }}
+                >
+                  <Space wrap size={10} style={{ flex: 1 }}>
+                    <Input
+                      placeholder="Tìm tài nguyên theo tên..."
+                      prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                      allowClear
+                      value={resSearch}
+                      onChange={(e) => {
+                        setResSearch(e.target.value)
+                        setResPage(1)
+                      }}
+                      style={{ width: 260 }}
+                    />
+
+                    <Select
+                      placeholder="Phân loại"
+                      value={resTypeFilter}
+                      onChange={(val) => {
+                        setResTypeFilter(val)
+                        setResPage(1)
+                      }}
+                      style={{ width: 170 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả phân loại' },
+                        { value: 'bath_tub', label: 'Bồn tắm' },
+                        { value: 'grooming_table', label: 'Bàn cắt tỉa' },
+                        { value: 'drying_cage', label: 'Chuồng sấy' },
+                        { value: 'spa_room', label: 'Phòng spa' },
+                      ]}
+                    />
+
+                    <Select
+                      placeholder="Trạng thái"
+                      value={resStatusFilter}
+                      onChange={(val) => {
+                        setResStatusFilter(val)
+                        setResPage(1)
+                      }}
+                      style={{ width: 160 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả trạng thái' },
+                        { value: 'active', label: '🟢 Sẵn sàng' },
+                        { value: 'inactive', label: '⚪ Tạm ngưng' },
+                      ]}
+                    />
+                  </Space>
+
+                  <Space size={12}>
                     <RowPerPageSelect value={resPageSize} onChange={(ps) => { setResPageSize(ps); setResPage(1) }} />
                   </Space>
                 </div>
 
                 <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden' }}>
                   <Table
-                    dataSource={resources}
+                    dataSource={filteredResources}
                     columns={resColumns}
                     rowKey="id"
                     loading={resLoading}
@@ -1031,7 +1773,7 @@ export default function StaffManagement() {
       {/* ===== MODAL THÊM / SỬA NHÂN VIÊN ===== */}
       <Modal
         centered
-        title={editingStaff ? `Chỉnh sửa nhân viên: ${editingStaff.full_name}` : 'Thêm nhân viên mới'}
+        title={editingStaff ? `Chỉnh sửa nhân viên: ${editingStaff.full_name || editingStaff.username}` : 'Thêm nhân viên mới'}
         open={staffModalOpen}
         onCancel={() => setStaffModalOpen(false)}
         onOk={saveStaff}
@@ -1039,14 +1781,107 @@ export default function StaffManagement() {
         width={580}
       >
         <Form form={staffForm} layout="vertical">
-          <Form.Item name="full_name" label="Họ và tên" rules={[{ required: true, message: 'Vui lòng nhập họ và tên nhân viên' }]}>
-            <Input placeholder="Ví dụ: Nguyễn Văn A" />
+          <Form.Item
+            name="full_name"
+            label="Họ và tên"
+            rules={[{ required: true, message: 'Vui lòng nhập họ và tên nhân viên' }]}
+          >
+            <Input
+              placeholder="Ví dụ: Kiều Nghiên, Nguyễn Văn An..."
+              onChange={(e) => {
+                const nameVal = e.target.value
+                if (!editingStaff && !isUsernameCustomized) {
+                  const existingUsernames = staffList.map((s) => s.username)
+                  const variants = generateUsernameVariants(nameVal)
+                  const baseUsername = variants[0] || ''
+                  const suggested = getAvailableUsername(baseUsername, existingUsernames)
+                  staffForm.setFieldsValue({ username: suggested })
+                }
+              }}
+            />
           </Form.Item>
 
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="username" label="Tên đăng nhập" rules={[{ required: true, message: 'Nhập tên đăng nhập' }]}>
-                <Input disabled={!!editingStaff} placeholder="ktv_ten" />
+              <Form.Item
+                name="username"
+                label="Tên đăng nhập"
+                rules={[
+                  { required: true, message: 'Vui lòng nhập tên đăng nhập' },
+                  {
+                    pattern: /^[a-zA-Z0-9_.]+$/,
+                    message: 'Tên đăng nhập chỉ gồm chữ cái, số, dấu gạch dưới (_) hoặc chấm (.)',
+                  },
+                ]}
+                extra={
+                  !editingStaff && (
+                    <Form.Item
+                      noStyle
+                      shouldUpdate={(prev, curr) => prev.full_name !== curr.full_name}
+                    >
+                      {({ getFieldValue }) => {
+                        const nameVal = getFieldValue('full_name')
+                        const variants = generateUsernameVariants(nameVal)
+                        if (!variants || variants.length === 0) {
+                          return (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              💡 Tự động tạo dựa trên Họ và tên. Bạn có thể sửa hoặc thêm hậu tố tùy ý.
+                            </Text>
+                          )
+                        }
+                        return (
+                          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                            <span style={{ fontSize: 12, color: '#64748b' }}>Gợi ý nhanh:</span>
+                            {variants.map((v) => (
+                              <Tag
+                                key={v}
+                                color="blue"
+                                style={{ cursor: 'pointer', borderRadius: 4, margin: 0, fontSize: 12 }}
+                                onClick={() => {
+                                  staffForm.setFieldsValue({ username: v })
+                                  setIsUsernameCustomized(true)
+                                }}
+                              >
+                                {v}
+                              </Tag>
+                            ))}
+                          </div>
+                        )
+                      }}
+                    </Form.Item>
+                  )
+                }
+              >
+                <Input
+                  disabled={!!editingStaff}
+                  placeholder="Tự động tạo từ họ tên"
+                  onChange={(e) => {
+                    setIsUsernameCustomized(!!e.target.value.trim())
+                  }}
+                  suffix={
+                    !editingStaff && (
+                      <Tooltip title="Tạo lại tên đăng nhập từ Họ và tên">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ReloadOutlined style={{ color: '#0f8b8d', fontSize: 12 }} />}
+                          onClick={() => {
+                            const nameVal = staffForm.getFieldValue('full_name')
+                            const existingUsernames = staffList.map((s) => s.username)
+                            const variants = generateUsernameVariants(nameVal)
+                            const baseUsername = variants[0] || ''
+                            const suggested = getAvailableUsername(baseUsername, existingUsernames)
+                            staffForm.setFieldsValue({ username: suggested })
+                            setIsUsernameCustomized(false)
+                            if (suggested) {
+                              message.info(`Đã tạo tên đăng nhập từ họ tên: ${suggested}`)
+                            }
+                          }}
+                        />
+                      </Tooltip>
+                    )
+                  }
+                />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -1061,6 +1896,30 @@ export default function StaffManagement() {
                       </Space>
                     ),
                   }))}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="gender" label="Giới tính">
+                <Select
+                  options={[
+                    { value: 'male', label: 'Nam' },
+                    { value: 'female', label: 'Nữ' },
+                    { value: 'other', label: 'Khác' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="birthday" label="Ngày sinh">
+                <DatePicker
+                  style={{ width: '100%' }}
+                  placeholder="Chọn ngày sinh"
+                  format="DD/MM/YYYY"
+                  disabledDate={(curr) => curr && curr > dayjs().endOf('day')}
                 />
               </Form.Item>
             </Col>
@@ -1090,7 +1949,11 @@ export default function StaffManagement() {
             </Col>
           </Row>
 
-          {/* Hàng: Chuyên môn tay nghề (bên trái) + Mật khẩu khởi tạo (bên phải) */}
+          <Form.Item name="address" label="Địa chỉ">
+            <Input placeholder="Số nhà, tên đường, phường/xã, quận/huyện..." prefix={<EnvironmentOutlined style={{ color: '#94a3b8' }} />} />
+          </Form.Item>
+
+          {/* Hàng: Chuyên môn tay nghề (bên trái) + Mật khẩu khởi tạo (bên phải khi thêm mới) */}
           <Row gutter={16}>
             <Col span={editingStaff ? 24 : 12}>
               <Form.Item name="specialties" label="Chuyên môn tay nghề">
@@ -1107,7 +1970,7 @@ export default function StaffManagement() {
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <span style={{ fontWeight: 600, color: '#334155', fontSize: 13 }}>
-                      <span style={{ color: '#ff4d4f' }}>* </span>Mật khẩu khởi tạo
+                      <span style={{ color: '#ff4d4f' }}>* </span>Mật khẩu
                     </span>
                     <Button
                       type="dashed"
@@ -1270,7 +2133,7 @@ export default function StaffManagement() {
               </div>
             </div>
 
-            {/* Chi tiết liên hệ */}
+            {/* Chi tiết liên hệ & thông tin cá nhân */}
             <Row gutter={[16, 16]} style={{ marginBottom: 18 }}>
               <Col span={12}>
                 <div style={{ padding: '12px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #f1f5f9' }}>
@@ -1291,6 +2154,47 @@ export default function StaffManagement() {
                   </Text>
                   <Text strong style={{ fontSize: 14, color: '#334155' }}>
                     {viewingStaff.email || 'Chưa cập nhật'}
+                  </Text>
+                </div>
+              </Col>
+              <Col span={12}>
+                <div style={{ padding: '12px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #f1f5f9' }}>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                    <UserOutlined style={{ marginRight: 6, color: '#0f8b8d' }} />
+                    Giới tính
+                  </Text>
+                  <div style={{ marginTop: 2 }}>
+                    {viewingStaff.gender === 'male' ? (
+                      <Tag color="blue" style={{ fontSize: 13, padding: '1px 8px', margin: 0 }}>Nam</Tag>
+                    ) : viewingStaff.gender === 'female' ? (
+                      <Tag color="magenta" style={{ fontSize: 13, padding: '1px 8px', margin: 0 }}>Nữ</Tag>
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: 13 }}>Khác / Chưa rõ</Text>
+                    )}
+                  </div>
+                </div>
+              </Col>
+              <Col span={12}>
+                <div style={{ padding: '12px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #f1f5f9' }}>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                    <CalendarOutlined style={{ marginRight: 6, color: '#0f8b8d' }} />
+                    Ngày sinh
+                  </Text>
+                  <Text strong style={{ fontSize: 14, color: '#334155' }}>
+                    {viewingStaff.birthday
+                      ? `${dayjs(viewingStaff.birthday).format('DD/MM/YYYY')} (${dayjs().diff(dayjs(viewingStaff.birthday), 'year')} tuổi)`
+                      : 'Chưa cập nhật'}
+                  </Text>
+                </div>
+              </Col>
+              <Col span={24}>
+                <div style={{ padding: '12px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid #f1f5f9' }}>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                    <EnvironmentOutlined style={{ marginRight: 6, color: '#0f8b8d' }} />
+                    Địa chỉ
+                  </Text>
+                  <Text strong style={{ fontSize: 14, color: '#334155' }}>
+                    {viewingStaff.address || 'Chưa cập nhật'}
                   </Text>
                 </div>
               </Col>
@@ -1365,34 +2269,12 @@ export default function StaffManagement() {
             <Input
               placeholder="Ví dụ: Bác sĩ thú y, Trợ tá spa..."
               disabled={editingRole?.is_system}
-              onChange={(e) => {
-                if (!editingRole) {
-                  roleForm.setFieldsValue({ code: toSlug(e.target.value) })
-                }
-              }}
             />
           </Form.Item>
 
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="code"
-                label="Mã vai trò (Code)"
-                rules={[
-                  { required: true, message: 'Vui lòng nhập mã vai trò' },
-                  { pattern: /^[a-z0-9_]+$/, message: 'Mã chỉ gồm chữ thường không dấu và dấu gạch dưới' },
-                ]}
-                extra={editingRole?.is_system ? 'Mã vai trò hệ thống được cố định' : 'Tự động sinh khi nhập tên vai trò'}
-              >
-                <Input placeholder="bac_si_thu_y" disabled={editingRole?.is_system} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="color" label="Màu sắc nhãn thẻ" rules={[{ required: true }]}>
-                <Select options={ROLE_COLOR_OPTIONS} />
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item name="color" label="Màu sắc nhãn thẻ" rules={[{ required: true, message: 'Vui lòng chọn màu sắc' }]}>
+            <Select options={ROLE_COLOR_OPTIONS} />
+          </Form.Item>
 
           <div style={{ marginBottom: 16 }}>
             <span style={{ fontSize: 13, color: '#64748b', marginRight: 12 }}>Xem trước nhãn thẻ:</span>
@@ -1468,10 +2350,6 @@ export default function StaffManagement() {
                     <Tag color="green">Vai trò tùy chỉnh</Tag>
                   )}
                 </Space>
-                <div style={{ marginTop: 6 }}>
-                  <Text type="secondary" style={{ fontSize: 13 }}>Mã vai trò (Code): </Text>
-                  <Text code>{viewingRole.code}</Text>
-                </div>
               </div>
             </div>
 
@@ -1514,26 +2392,43 @@ export default function StaffManagement() {
                   )
                 }
                 return (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                     {assigned.map((st) => (
                       <div
                         key={st.id}
+                        onClick={() => {
+                          setRoleDetailModalOpen(false)
+                          setViewingStaff(st)
+                          setStaffDetailModalOpen(true)
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 8,
-                          padding: '6px 12px',
-                          background: '#f8fafc',
-                          borderRadius: 8,
+                          gap: 10,
+                          padding: '8px 14px',
+                          background: '#fff',
+                          borderRadius: 10,
                           border: '1px solid #e2e8f0',
+                          cursor: 'pointer',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                          transition: 'all 0.2s ease',
                         }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = '#0f8b8d'
+                          e.currentTarget.style.background = '#f0fdfa'
+                          e.currentTarget.style.transform = 'translateY(-1px)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = '#e2e8f0'
+                          e.currentTarget.style.background = '#fff'
+                          e.currentTarget.style.transform = 'translateY(0)'
+                        }}
+                        title="Bấm để xem chi tiết hồ sơ nhân sự này"
                       >
-                        <UserOutlined style={{ color: '#0f8b8d' }} />
-                        <div>
-                          <Text strong style={{ fontSize: 13 }}>{st.full_name || st.username}</Text>
-                          <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>@{st.username}</Text>
-                        </div>
-                        {st.phone && <Text type="secondary" style={{ fontSize: 11 }}>• {st.phone}</Text>}
+                        <Avatar style={{ background: '#0f8b8d', flexShrink: 0 }} size={28} icon={<UserOutlined />} />
+                        <Text strong style={{ fontSize: 13, color: '#0b3d3f' }}>
+                          {st.full_name || st.username}
+                        </Text>
                       </div>
                     ))}
                   </div>
@@ -1552,6 +2447,7 @@ export default function StaffManagement() {
         onCancel={() => setSpecModalOpen(false)}
         onOk={saveSpecialty}
         okText="Lưu chuyên môn"
+        width={560}
       >
         <Form form={specForm} layout="vertical">
           <Form.Item
@@ -1559,21 +2455,187 @@ export default function StaffManagement() {
             label="Tên chuyên môn tay nghề"
             rules={[{ required: true, message: 'Vui lòng nhập tên chuyên môn' }]}
           >
-            <Input placeholder="Ví dụ: Tắm & Vệ sinh toàn diện, Cắt tỉa Poodle tạo kiểu..." />
+            <Input
+              placeholder="Ví dụ: Tắm & Vệ sinh toàn diện, Cắt tỉa Poodle tạo kiểu..."
+            />
           </Form.Item>
 
           <Form.Item
-            name="code"
-            label="Mã chuyên môn (Code)"
-            rules={[
-              { required: true, message: 'Vui lòng nhập mã chuyên môn' },
-              { pattern: /^[a-z0-9_]+$/, message: 'Mã chỉ gồm chữ thường không dấu và gạch dưới' },
-            ]}
-            extra="Dùng để liên kết với yêu cầu kỹ thuật của dịch vụ spa (ví dụ: tam_ve_sinh, cat_tia_poodle)"
+            name="species_scope"
+            label="Áp dụng cho loài"
+            rules={[{ required: true, message: 'Vui lòng chọn loài áp dụng' }]}
           >
-            <Input placeholder="tam_ve_sinh" />
+            <Select
+              options={[
+                { value: 'both', label: '🐶🐱 Cả chó & mèo (Phổ biến)' },
+                { value: 'dog', label: '🐶 Chuyên cho Chó' },
+                { value: 'cat', label: '🐱 Chuyên cho Mèo (Chăm sóc đặc thù)' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="description"
+            label="Mô tả phạm vi kỹ năng & công việc"
+          >
+            <Input.TextArea
+              rows={3}
+              placeholder="Mô tả ngắn gọn quy trình, thao tác và yêu cầu kỹ thuật đối với kỹ thuật viên đảm nhận chuyên môn này..."
+            />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* ===== MODAL XEM CHI TIẾT CHUYÊN MÔN ===== */}
+      <Modal
+        centered
+        title={
+          <Space>
+            <TagOutlined style={{ color: '#0f8b8d' }} />
+            <span>Chi tiết chuyên môn: {viewingSpec?.name_vi}</span>
+          </Space>
+        }
+        open={specDetailModalOpen}
+        onCancel={() => setSpecDetailModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setSpecDetailModalOpen(false)}>
+            Đóng
+          </Button>,
+          isManager && (
+            <Button
+              key="edit"
+              type="primary"
+              icon={<EditOutlined />}
+              onClick={() => {
+                const target = viewingSpec
+                setSpecDetailModalOpen(false)
+                openSpecModal(target)
+              }}
+            >
+              Chỉnh sửa chuyên môn
+            </Button>
+          ),
+        ]}
+        width={580}
+      >
+        {viewingSpec && (
+          <div>
+            {/* Banner thông tin chính */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 16,
+                padding: '14px 16px',
+                background: '#f8fafc',
+                borderRadius: 12,
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              <div>
+                <Space>
+                  <Text strong style={{ fontSize: 16, color: '#0f8b8d' }}>
+                    {viewingSpec.name_vi}
+                  </Text>
+                  {(() => {
+                    const item = SPECIES_SCOPE_MAP[viewingSpec.species_scope] || SPECIES_SCOPE_MAP.both
+                    return (
+                      <Tag color={item.color} style={{ fontSize: 12, padding: '2px 10px', borderRadius: 6 }}>
+                        {item.icon} {item.label}
+                      </Tag>
+                    )
+                  })()}
+                </Space>
+              </div>
+            </div>
+
+            {/* Mô tả phạm vi kỹ năng & công việc */}
+            <div style={{ marginBottom: 16 }}>
+              <Text strong style={{ fontSize: 13, color: '#334155' }}>Mô tả phạm vi kỹ năng & công việc:</Text>
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: '12px 14px',
+                  background: '#fcfcfc',
+                  border: '1px solid #f1f5f9',
+                  borderRadius: 8,
+                  color: '#475569',
+                  lineHeight: 1.6,
+                }}
+              >
+                {viewingSpec.description || <Text type="secondary" italic>Chưa có mô tả chi tiết cho chuyên môn này.</Text>}
+              </div>
+            </div>
+
+            <Divider style={{ margin: '16px 0' }} />
+
+            {/* Danh sách kỹ thuật viên sở hữu chuyên môn này */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <Text strong style={{ fontSize: 13, color: '#334155' }}>
+                  <UserOutlined style={{ marginRight: 6, color: '#0f8b8d' }} />
+                  Kỹ thuật viên đang sở hữu chuyên môn này ({
+                    staffList.filter((st) => (st.specialties || []).includes(viewingSpec.id)).length
+                  })
+                </Text>
+              </div>
+
+              {(() => {
+                const assigned = staffList.filter((st) => (st.specialties || []).includes(viewingSpec.id))
+                if (assigned.length === 0) {
+                  return (
+                    <div style={{ textAlign: 'center', padding: '16px 0', background: '#f8fafc', borderRadius: 8 }}>
+                      <Text type="secondary">Hiện chưa có kỹ thuật viên nào được gán chuyên môn này.</Text>
+                    </div>
+                  )
+                }
+                return (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                    {assigned.map((st) => (
+                      <div
+                        key={st.id}
+                        onClick={() => {
+                          setSpecDetailModalOpen(false)
+                          setViewingStaff(st)
+                          setStaffDetailModalOpen(true)
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 14px',
+                          background: '#fff',
+                          borderRadius: 10,
+                          border: '1px solid #e2e8f0',
+                          cursor: 'pointer',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                          transition: 'all 0.2s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = '#0f8b8d'
+                          e.currentTarget.style.background = '#f0fdfa'
+                          e.currentTarget.style.transform = 'translateY(-1px)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = '#e2e8f0'
+                          e.currentTarget.style.background = '#fff'
+                          e.currentTarget.style.transform = 'translateY(0)'
+                        }}
+                        title="Bấm để xem chi tiết hồ sơ nhân sự này"
+                      >
+                        <Avatar style={{ background: '#0f8b8d', flexShrink: 0 }} size={28} icon={<UserOutlined />} />
+                        <Text strong style={{ fontSize: 13, color: '#0b3d3f' }}>
+                          {st.full_name || st.username}
+                        </Text>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* ===== MODAL CA LÀM & NGÀY NGHỈ ===== */}
@@ -1583,7 +2645,7 @@ export default function StaffManagement() {
         open={shiftModalOpen}
         onCancel={() => setShiftModalOpen(false)}
         footer={null}
-        width={600}
+        width={650}
       >
         <Tabs
           items={[
@@ -1596,17 +2658,110 @@ export default function StaffManagement() {
                     type="info"
                     showIcon
                     message="Quy định ca làm việc"
-                    description="Kỹ thuật viên có ca làm hợp lệ mới được phân công vào lịch hẹn của khách."
-                    style={{ marginBottom: 16 }}
+                    description="Kỹ thuật viên có ca làm hợp lệ mới được phân công vào lịch hẹn của khách hàng. Quản lý có thể cấu hình ngày làm và khung giờ bên dưới."
+                    style={{ marginBottom: 14 }}
                   />
-                  {shifts.length > 0 ? (
-                    shifts.map((s) => (
-                      <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
-                        <Text strong>{WEEKDAYS[s.weekday]}</Text>
-                        <Tag color="cyan">{s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}</Tag>
+
+                  {/* Cấu hình nhanh theo mẫu */}
+                  {isManager && (
+                    <div style={{ marginBottom: 14, padding: '10px 12px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                        Mẫu ca làm việc phổ biến:
+                      </Text>
+                      <Space wrap>
+                        <Button size="small" onClick={() => applyShiftPreset('all')}>
+                          Tất cả các ngày (T2 - CN: 08:00 - 19:00)
+                        </Button>
+                        <Button size="small" onClick={() => applyShiftPreset('mon_sat')}>
+                          T2 - T7 (08:00 - 19:00, CN nghỉ)
+                        </Button>
+                        <Button size="small" onClick={() => applyShiftPreset('mon_fri')}>
+                          T2 - T6 (08:00 - 18:00, T7-CN nghỉ)
+                        </Button>
+                      </Space>
+                    </div>
+                  )}
+
+                  {/* Danh sách 7 ngày trong tuần */}
+                  <div style={{ maxHeight: 320, overflowY: 'auto', paddingRight: 4 }}>
+                    {weeklyShifts.map((d) => (
+                      <div
+                        key={d.weekday}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '10px 14px',
+                          background: d.enabled ? '#f0fdfa' : '#f8fafc',
+                          borderRadius: 8,
+                          border: `1px solid ${d.enabled ? '#ccfbf1' : '#e2e8f0'}`,
+                          marginBottom: 8,
+                        }}
+                      >
+                        <Space size={12}>
+                          <Checkbox
+                            checked={d.enabled}
+                            disabled={!isManager}
+                            onChange={(e) => {
+                              const val = e.target.checked
+                              setWeeklyShifts((prev) =>
+                                prev.map((item) => (item.weekday === d.weekday ? { ...item, enabled: val } : item))
+                              )
+                            }}
+                          >
+                            <Text strong style={{ minWidth: 70, display: 'inline-block' }}>{WEEKDAYS[d.weekday]}</Text>
+                          </Checkbox>
+                          <Tag color={d.enabled ? 'cyan' : 'default'}>
+                            {d.enabled ? 'Làm việc' : 'Nghỉ'}
+                          </Tag>
+                        </Space>
+
+                        {d.enabled ? (
+                          <Space size={8}>
+                            <TimePicker
+                              format="HH:mm"
+                              minuteStep={15}
+                              value={dayjs(d.start_time, 'HH:mm')}
+                              disabled={!isManager}
+                              onChange={(_, timeStr) => {
+                                if (timeStr) {
+                                  setWeeklyShifts((prev) =>
+                                    prev.map((item) => (item.weekday === d.weekday ? { ...item, start_time: timeStr } : item))
+                                  )
+                                }
+                              }}
+                              style={{ width: 95 }}
+                            />
+                            <span>đến</span>
+                            <TimePicker
+                              format="HH:mm"
+                              minuteStep={15}
+                              value={dayjs(d.end_time, 'HH:mm')}
+                              disabled={!isManager}
+                              onChange={(_, timeStr) => {
+                                if (timeStr) {
+                                  setWeeklyShifts((prev) =>
+                                    prev.map((item) => (item.weekday === d.weekday ? { ...item, end_time: timeStr } : item))
+                                  )
+                                }
+                              }}
+                              style={{ width: 95 }}
+                            />
+                          </Space>
+                        ) : (
+                          <Text type="secondary" style={{ fontStyle: 'italic', fontSize: 13 }}>Không xếp ca</Text>
+                        )}
                       </div>
-                    ))
-                  ) : <Empty description="Chưa có ca làm việc nào được cấu hình." />}
+                    ))}
+                  </div>
+
+                  {isManager && (
+                    <div style={{ marginTop: 14, textAlign: 'right' }}>
+                      <Button type="primary" loading={shiftSaving} onClick={saveShifts} style={{ background: '#0f8b8d', borderColor: '#0f8b8d' }}>
+                        Lưu lịch ca làm việc
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ),
             },
@@ -1618,7 +2773,7 @@ export default function StaffManagement() {
                   <Form form={timeOffForm} layout="vertical" onFinish={addTimeOff} style={{ marginBottom: 16 }}>
                     <Row gutter={12}>
                       <Col span={14}>
-                        <Form.Item name="range" label="Khoảng ngày nghỉ" rules={[{ required: true, message: 'Chọn ngày' }]}>
+                        <Form.Item name="range" label="Khoảng ngày nghỉ" rules={[{ required: true, message: 'Chọn ngày nghỉ' }]}>
                           <DatePicker.RangePicker format="YYYY-MM-DD" style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
@@ -1657,17 +2812,17 @@ export default function StaffManagement() {
         />
       </Modal>
 
-      {/* ===== MODAL THÊM TÀI NGUYÊN ===== */}
+      {/* ===== MODAL THÊM / SỬA TÀI NGUYÊN ===== */}
       <Modal
         centered
-        title="Thêm vị trí tài nguyên cơ sở vật chất"
+        title={editingRes ? `Chỉnh sửa tài nguyên: ${editingRes.name}` : 'Thêm vị trí tài nguyên cơ sở vật chất'}
         open={resModalOpen}
         onCancel={() => setResModalOpen(false)}
         onOk={saveResource}
-        okText="Thêm mới"
+        okText={editingRes ? 'Lưu thay đổi' : 'Thêm mới'}
       >
         <Form form={resForm} layout="vertical">
-          <Form.Item name="name" label="Tên tài nguyên" rules={[{ required: true, message: 'Nhập tên' }]}>
+          <Form.Item name="name" label="Tên tài nguyên" rules={[{ required: true, message: 'Nhập tên tài nguyên' }]}>
             <Input placeholder="Ví dụ: Bàn cắt 4, Chuồng sấy 5..." />
           </Form.Item>
           <Form.Item name="resource_type" label="Loại tài nguyên" rules={[{ required: true }]}>

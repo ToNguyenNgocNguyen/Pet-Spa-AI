@@ -13,7 +13,7 @@ from catalog.models import Specialty
 
 from .models import Resource, Spa, StaffProfile, TimeOff, WorkShift
 
-STAFF_ROLES = (Role.RECEPTIONIST, Role.TECHNICIAN)
+STAFF_ROLES = (Role.MANAGER, Role.RECEPTIONIST, Role.TECHNICIAN)
 
 
 class StaffSerializer(serializers.ModelSerializer):
@@ -26,11 +26,14 @@ class StaffSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False, min_length=8)
     specialties = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Specialty.objects.all(), required=False)
+    birthday = serializers.DateField(required=False, allow_null=True)
+    gender = serializers.CharField(required=False, allow_blank=True, default='other')
+    address = serializers.CharField(required=False, allow_blank=True, default='')
 
     class Meta:
         model = StaffProfile
         fields = ['id', 'user_id', 'username', 'full_name', 'phone', 'email', 'role', 'password',
-                  'specialties', 'is_active']
+                  'specialties', 'is_active', 'birthday', 'gender', 'address']
 
     def validate_username(self, v):
         qs = User.objects.filter(username__iexact=v)
@@ -43,6 +46,9 @@ class StaffSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         if self.instance is None and not attrs.get('password'):
             raise serializers.ValidationError({'password': 'Bắt buộc nhập mật khẩu khi tạo tài khoản.'})
+        user_data = attrs.get('user', {})
+        if self.instance is None and user_data.get('role') == Role.MANAGER:
+            raise serializers.ValidationError({'role': 'Không thể tạo tài khoản Quản lý qua API nhân sự.'})
         return attrs
 
     @transaction.atomic
@@ -138,15 +144,22 @@ class StaffViewSet(viewsets.ModelViewSet):
         p = self.request.query_params
         if p.get('role'):
             qs = qs.filter(user__role=p['role'])
-        if p.get('include_inactive') != '1':
+        if self.action == 'list' and p.get('include_inactive') != '1':
             qs = qs.filter(is_active=True)
         return qs
 
     def perform_destroy(self, instance):
+        if instance.user_id == self.request.user.id:
+            raise PermissionDenied('Bạn không thể tự khóa tài khoản của chính mình.')
         instance.is_active = False
         instance.user.is_active = False
         instance.user.save(update_fields=['is_active'])
         instance.save(update_fields=['is_active'])
+
+    def perform_update(self, serializer):
+        if serializer.validated_data.get('is_active') is False and serializer.instance.user_id == self.request.user.id:
+            raise PermissionDenied('Bạn không thể tự khóa tài khoản của chính mình.')
+        serializer.save()
 
     def _own_or_manager(self, request, staff):
         if request.user.role != Role.MANAGER and staff.user_id != request.user.id:
@@ -205,11 +218,24 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Resource.objects.all()
-        if self.request.query_params.get('include_inactive') != '1':
+        if self.action == 'list' and self.request.query_params.get('include_inactive') != '1':
             qs = qs.filter(is_active=True)
         t = self.request.query_params.get('resource_type')
         return qs.filter(resource_type=t) if t else qs
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=['is_active'])
+        from django.utils import timezone
+        from rest_framework.exceptions import ValidationError
+        from scheduling.models import ACTIVE_STATUSES, BookingItem
+
+        active_bookings_count = BookingItem.objects.filter(
+            resource=instance,
+            booking__status__in=ACTIVE_STATUSES,
+            end_at__gte=timezone.now()
+        ).count()
+        if active_bookings_count > 0:
+            raise ValidationError(
+                f'Không thể xóa cơ sở vật chất "{instance.name}" vì đang có {active_bookings_count} lịch hẹn sắp tới đang sử dụng. Vui lòng chuyển sang "Tạm ngưng" hoặc dời lịch trước.'
+            )
+        instance.delete()
+

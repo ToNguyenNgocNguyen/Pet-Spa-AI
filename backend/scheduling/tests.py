@@ -227,10 +227,16 @@ class RoleScopeTests(BaseCase):
 
 class StaffTests(BaseCase):
     def test_only_manager_creates_staff(self):
-        body = dict(username='ktv9', password='Demo@12345', full_name='KTV Mới', role='technician')
+        body = dict(
+            username='ktv9', password='Demo@12345', full_name='KTV Mới', role='technician',
+            birthday='1995-05-20', gender='female', address='123 Lê Lợi, Q.1, TP.HCM'
+        )
         self.assertEqual(self.as_user('letan').post(f'{API}/staff', body, format='json').status_code, 403)
         r = self.as_user('quanly').post(f'{API}/staff', body, format='json')
         self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['birthday'], '1995-05-20')
+        self.assertEqual(r.data['gender'], 'female')
+        self.assertEqual(r.data['address'], '123 Lê Lợi, Q.1, TP.HCM')
         self.assertTrue(User.objects.get(username='ktv9').check_password('Demo@12345'))
         # trùng tên đăng nhập
         self.assertEqual(self.as_user('quanly').post(f'{API}/staff', body, format='json').status_code, 422)

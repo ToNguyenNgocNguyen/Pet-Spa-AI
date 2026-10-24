@@ -21,7 +21,7 @@ const DEMO_ACCOUNTS = [
     badge: 'Toàn quyền hệ thống',
     badgeColor: 'gold',
     username: 'quanly',
-    phone: '0902000001',
+    phone: '0909111222',
     name: 'Chủ spa Lông Mượt',
     desc: 'Cấu hình bảng giá, tài nguyên, nhân sự, tri thức SOP AI',
   },
@@ -30,7 +30,7 @@ const DEMO_ACCOUNTS = [
     badge: 'Vận hành tại quầy',
     badgeColor: 'blue',
     username: 'letan',
-    phone: '0902000002',
+    phone: '0908222333',
     name: 'Nguyễn Lễ Tân',
     desc: 'Tiếp nhận khách, xếp thợ, check-in/out, hóa đơn & thu ngân',
   },
@@ -39,7 +39,7 @@ const DEMO_ACCOUNTS = [
     badge: 'Chuyên môn dịch vụ',
     badgeColor: 'orange',
     username: 'ktv1',
-    phone: '0902000003',
+    phone: '0907333444',
     name: 'KTV Tắm & Vệ sinh',
     desc: 'Xem danh sách ca hẹn được giao, cảnh báo an toàn thú cưng',
   },
@@ -47,8 +47,8 @@ const DEMO_ACCOUNTS = [
     role: 'Khách hàng (Customer)',
     badge: 'Chủ thú cưng',
     badgeColor: 'green',
-    username: '0901000001',
-    phone: '0901000001',
+    username: '0901234567',
+    phone: '0901234567',
     name: 'Nguyễn Thu Hà (Bé Bông, Mimi)',
     desc: 'Đặt lịch online, kiểm tra tính năng AI cảnh báo dị ứng',
   },
@@ -215,10 +215,21 @@ export default function Login() {
       await fn(values)
       nav('/app/tong-quan')
     } catch (e) {
-      const fields = toFormErrors(e)
-      if (form && fields.length) form.setFields(fields)
-      setError(fields.length ? '' : e.message)
-      if (!form && e.fields?.non_field_errors) setError(e.fields.non_field_errors.join(' '))
+      const allFields = toFormErrors(e)
+      const nonFieldErrors = e.fields?.non_field_errors || e.fields?.detail || []
+      const nonFieldMsg = Array.isArray(nonFieldErrors) ? nonFieldErrors.join(' ') : String(nonFieldErrors || '')
+
+      const formFieldErrors = allFields.filter(
+        (f) => f.name !== 'non_field_errors' && f.name !== 'detail'
+      )
+
+      if (form && formFieldErrors.length) {
+        form.setFields(formFieldErrors)
+      }
+
+      // Xác định thông báo lỗi chính để hiển thị rõ ràng trên Banner Alert
+      const mainError = nonFieldMsg || e.message || (formFieldErrors[0]?.errors?.[0]) || 'Đăng nhập không thành công.'
+      setError(mainError)
     } finally {
       setBusy(false)
     }
@@ -236,6 +247,7 @@ export default function Login() {
 
   const handleFillDemo = (acc) => {
     setActiveTab('login')
+    setError('')
     loginForm.setFieldsValue({
       username: acc.username,
       password: 'Demo@12345',
@@ -252,6 +264,14 @@ export default function Login() {
       initialValues={{ remember: true }}
       onFinish={run((v) => login(v.username, v.password), loginForm)}
     >
+      {error && (
+        <Alert
+          type="error"
+          message={error}
+          showIcon
+          style={{ marginBottom: 16, borderRadius: 8, fontSize: 13 }}
+        />
+      )}
       <Form.Item
         name="username"
         label="Tên đăng nhập hoặc Số điện thoại"
@@ -328,6 +348,14 @@ export default function Login() {
       layout="vertical"
       onFinish={run(handleRegister, regForm)}
     >
+      {error && (
+        <Alert
+          type="error"
+          message={error}
+          showIcon
+          style={{ marginBottom: 16, borderRadius: 8, fontSize: 13 }}
+        />
+      )}
       <Form.Item
         name="full_name"
         label="Họ và tên chủ nuôi"
@@ -499,15 +527,6 @@ export default function Login() {
                 : 'Đăng ký tài khoản để theo dõi lịch spa và quản lý hồ sơ thú cưng.'}
             </p>
           </div>
-
-          {error && (
-            <Alert
-              type="error"
-              message={error}
-              showIcon
-              style={{ marginBottom: 14, borderRadius: 8, padding: '6px 12px' }}
-            />
-          )}
 
           <Tabs
             activeKey={activeTab}

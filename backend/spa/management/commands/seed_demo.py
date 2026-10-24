@@ -69,18 +69,18 @@ PACKAGES = [
      ['cat_spa', 'ear_clean', 'bath_unscented']),
 ]
 
-# tên, SĐT, tài khoản (nếu có)
+# tên, SĐT chính, SĐT phụ/Zalo, ngày sinh, tài khoản (nếu có)
 CLIENTS = [
-    ('Nguyễn Thu Hà', '0901000001', 'khach1'),
-    ('Trần Minh Quân', '0901000002', None),
-    ('Lê Phương Anh', '0901000003', None),
-    ('Phạm Quốc Bảo', '0901000004', None),
-    ('Võ Ngọc Diệp', '0901000005', None),
-    ('Đặng Hoài Nam', '0901000006', None),
-    ('Bùi Khánh Linh', '0901000007', None),
-    ('Hoàng Gia Huy', '0901000008', None),
-    ('Ngô Thanh Mai', '0901000009', None),
-    ('Đỗ Tuấn Kiệt', '0901000010', None),
+    ('Nguyễn Thu Hà', '0901234567', '0909888111', date(1994, 5, 12), 'khach1'),
+    ('Trần Minh Quân', '0912345678', '0988222333', date(1990, 8, 20), None),
+    ('Lê Phương Anh', '0983456789', '0977333444', date(1996, 11, 3), None),
+    ('Phạm Quốc Bảo', '0974567890', '', date(1988, 3, 15), None),
+    ('Võ Ngọc Diệp', '0935678901', '0911555666', date(1995, 7, 28), None),
+    ('Đặng Hoài Nam', '0866789012', '', date(1992, 12, 10), None),
+    ('Bùi Khánh Linh', '0887890123', '0933777888', date(1998, 9, 25), None),
+    ('Hoàng Gia Huy', '0778901234', '', date(1993, 1, 18), None),
+    ('Ngô Thanh Mai', '0359012345', '0855999000', date(1997, 6, 30), None),
+    ('Đỗ Tuấn Kiệt', '0389123456', '', date(1991, 10, 5), None),
 ]
 
 # chủ (index), tên, loài, giống, lông, sinh cách đây (tháng), cân nặng, thẻ, dị ứng, tiêm phòng?
@@ -157,7 +157,7 @@ class Command(BaseCommand):
 
     def _spa(self):
         Spa.objects.update_or_create(id=1, defaults=dict(
-            name='Spa Thú Y Lông Mượt', phone='0283000000', email='lienhe@longmuot.example',
+            name='Spa Thú Y Lông Mượt', phone='02838229999', email='lienhe@longmuot.example',
             address='25 Lê Văn Thịnh, P. Bình Trưng Tây, TP. Thủ Đức, TP.HCM',
             open_time=time(8, 0), close_time=time(19, 0), open_weekdays=[0, 1, 2, 3, 4, 5, 6],
             slot_minutes=30, cancel_cutoff_hours=2,
@@ -165,11 +165,11 @@ class Command(BaseCommand):
 
     def _users(self):
         rows = [
-            ('quanly', 'Chủ spa Lông Mượt', Role.MANAGER, '0902000001'),
-            ('letan', 'Nguyễn Lễ Tân', Role.RECEPTIONIST, '0902000002'),
-            ('ktv1', 'Kỹ thuật viên Tắm', Role.TECHNICIAN, '0902000003'),
-            ('ktv2', 'Kỹ thuật viên Cắt Poodle', Role.TECHNICIAN, '0902000004'),
-            ('ktv3', 'Kỹ thuật viên Spa mèo', Role.TECHNICIAN, '0902000005'),
+            ('quanly', 'Chủ spa Lông Mượt', Role.MANAGER, '0909111222'),
+            ('letan', 'Nguyễn Lễ Tân', Role.RECEPTIONIST, '0908222333'),
+            ('ktv1', 'Kỹ thuật viên Tắm', Role.TECHNICIAN, '0907333444'),
+            ('ktv2', 'Kỹ thuật viên Cắt Poodle', Role.TECHNICIAN, '0906444555'),
+            ('ktv3', 'Kỹ thuật viên Spa mèo', Role.TECHNICIAN, '0905555666'),
         ]
         for username, full_name, role, phone in rows:
             user, _ = User.objects.get_or_create(username=username)
@@ -226,16 +226,34 @@ class Command(BaseCommand):
 
     def _clients_and_pets(self, tags):
         clients = []
-        for name, phone, username in CLIENTS:
+        for name, phone, sec_phone, bday, username in CLIENTS:
             user = None
             if username:
                 user, _ = User.objects.get_or_create(username=username)
                 user.full_name, user.role, user.phone = name, Role.CUSTOMER, phone
                 user.set_password(DEMO_PASSWORD)
                 user.save()
-            client, _ = Client.objects.update_or_create(phone=phone, defaults=dict(
-                full_name=name, user=user, source=Client.Source.ONLINE if user else Client.Source.WALK_IN,
-                is_active=True))
+
+            client = None
+            if user:
+                client = Client.objects.filter(user=user).first()
+            if not client:
+                client = Client.objects.filter(full_name=name).first()
+
+            if client:
+                client.phone = phone
+                client.secondary_phone = sec_phone
+                client.birthday = bday
+                client.full_name = name
+                client.user = user
+                client.source = Client.Source.ONLINE if user else Client.Source.WALK_IN
+                client.is_active = True
+                client.save()
+            else:
+                client, _ = Client.objects.update_or_create(phone=phone, defaults=dict(
+                    full_name=name, secondary_phone=sec_phone, birthday=bday,
+                    user=user, source=Client.Source.ONLINE if user else Client.Source.WALK_IN,
+                    is_active=True))
             clients.append(client)
 
         for owner, name, species, breed, coat, age_m, weight, tag_codes, allergy, vaccinated in PETS:
