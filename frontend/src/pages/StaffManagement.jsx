@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
-  Alert, Avatar, Button, Card, Checkbox, Col, DatePicker, Divider, Dropdown, Empty, Form, Input, Modal, Popconfirm, Row,
+  Alert, Avatar, Badge, Button, Card, Checkbox, Col, DatePicker, Divider, Dropdown, Empty, Form, Input, Modal, Popconfirm, Radio, Row,
   Select, Space, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography, message,
 } from 'antd'
 import {
-  CalendarOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, EnvironmentOutlined, ExclamationCircleOutlined,
-  IdcardOutlined, LockOutlined, MailOutlined, MoreOutlined, PhoneOutlined, PlusOutlined, ReloadOutlined,
-  SafetyCertificateOutlined, SearchOutlined, TagOutlined, ThunderboltOutlined, ToolOutlined, UserAddOutlined, UserOutlined,
+  CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, EnvironmentOutlined, ExclamationCircleOutlined,
+  EyeOutlined, IdcardOutlined, InfoCircleOutlined, LeftOutlined, LockOutlined, MailOutlined, MoreOutlined, PhoneOutlined, PlusOutlined, ReloadOutlined,
+  RightOutlined, SafetyCertificateOutlined, ScheduleOutlined, SearchOutlined, StarOutlined, TagOutlined, TeamOutlined, ThunderboltOutlined,
+  ToolOutlined, UserAddOutlined, UserOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { api, toFormErrors, unwrap } from '../api.js'
@@ -16,6 +17,14 @@ import RowPerPageSelect from '../components/RowPerPageSelect.jsx'
 const { Title, Text, Paragraph } = Typography
 
 const WEEKDAYS = ['Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy', 'Chủ nhật']
+
+const getMonday = (d = new Date()) => {
+  const date = new Date(d)
+  const day = date.getDay()
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1)
+  const mon = new Date(date.setDate(diff))
+  return mon.toISOString().slice(0, 10)
+}
 
 const RESOURCE_TYPE_MAP = {
   bath_tub: { label: 'Bồn tắm', color: 'blue' },
@@ -244,6 +253,323 @@ export default function StaffManagement() {
   const [resSearch, setResSearch] = useState('')
   const [resTypeFilter, setResTypeFilter] = useState('all')
   const [resStatusFilter, setResStatusFilter] = useState('all')
+
+  // ===== Phân công ca trực theo chuyên môn (Roster & Availability) =====
+  const [rosterData, setRosterData] = useState(null)
+  const [rosterLoading, setRosterLoading] = useState(false)
+  const [rosterWeekStart, setRosterWeekStart] = useState(() => getMonday(new Date()))
+  const [rosterRoleFilter, setRosterRoleFilter] = useState('technician') // Ưu tiên KTV
+  const [rosterSpecFilter, setRosterSpecFilter] = useState('all')
+
+  // Gán / Chỉnh sửa ca trực nhanh theo ngày
+  const [quickShiftModalOpen, setQuickShiftModalOpen] = useState(false)
+  const [quickShiftTarget, setQuickShiftTarget] = useState(null)
+  const [quickShiftSaving, setQuickShiftSaving] = useState(false)
+  const [quickShiftForm] = Form.useForm()
+
+  // Tra cứu & Gợi ý Kỹ thuật viên rảnh theo ca và chuyên môn
+  const [availModalOpen, setAvailModalOpen] = useState(false)
+  const [availDate, setAvailDate] = useState(() => dayjs())
+  const [availSpecId, setAvailSpecId] = useState(null)
+  const [availResults, setAvailResults] = useState([])
+  const [availLoading, setAvailLoading] = useState(false)
+
+  const loadRoster = useCallback(async (weekStart = rosterWeekStart, role = rosterRoleFilter, spec = rosterSpecFilter) => {
+    setRosterLoading(true)
+    try {
+      let url = `/staff/roster?week_start=${weekStart}`
+      if (role && role !== 'all') url += `&role=${role}`
+      if (spec && spec !== 'all') url += `&specialty=${spec}`
+      const res = await api(url)
+      setRosterData(res || null)
+    } catch (e) {
+      message.error(e.message || 'Không thể tải bảng phân công ca trực')
+    } finally {
+      setRosterLoading(false)
+    }
+  }, [rosterWeekStart, rosterRoleFilter, rosterSpecFilter])
+
+  useEffect(() => {
+    if (activeTab === 'roster') {
+      loadRoster(rosterWeekStart, rosterRoleFilter, rosterSpecFilter)
+    }
+  }, [activeTab, rosterWeekStart, rosterRoleFilter, rosterSpecFilter, loadRoster])
+
+  const handlePrevWeek = () => {
+    const d = new Date(rosterWeekStart)
+    d.setDate(d.getDate() - 7)
+    setRosterWeekStart(d.toISOString().slice(0, 10))
+  }
+
+  const handleCurrentWeek = () => {
+    setRosterWeekStart(getMonday(new Date()))
+  }
+
+  const handleNextWeek = () => {
+    const d = new Date(rosterWeekStart)
+    d.setDate(d.getDate() + 7)
+    setRosterWeekStart(d.toISOString().slice(0, 10))
+  }
+
+  const handleOpenQuickShift = (staff, dayObj, currentShift, isOnLeave, leaveReason) => {
+    if (!isManager) {
+      message.info('Chỉ Quản lý mới có quyền điều phối hoặc đổi ca trực.')
+      return
+    }
+    setQuickShiftTarget({ staff, dayObj, currentShift, isOnLeave, leaveReason })
+    quickShiftForm.setFieldsValue({
+      mode: currentShift ? 'custom' : 'off',
+      start_time: currentShift ? dayjs(currentShift.start_time, 'HH:mm') : dayjs('08:00', 'HH:mm'),
+      end_time: currentShift ? dayjs(currentShift.end_time, 'HH:mm') : dayjs('19:00', 'HH:mm'),
+    })
+    setQuickShiftModalOpen(true)
+  }
+
+  const handleSaveQuickShift = async () => {
+    try {
+      const vals = await quickShiftForm.validateFields()
+      setQuickShiftSaving(true)
+      const isOff = vals.mode === 'off'
+      let startTime = '08:00'
+      let endTime = '19:00'
+      if (vals.mode === 'full') {
+        startTime = '08:00'
+        endTime = '19:00'
+      } else if (vals.mode === 'morning') {
+        startTime = '08:00'
+        endTime = '13:30'
+      } else if (vals.mode === 'afternoon') {
+        startTime = '13:30'
+        endTime = '19:00'
+      } else if (vals.mode === 'custom') {
+        startTime = vals.start_time ? vals.start_time.format('HH:mm') : '08:00'
+        endTime = vals.end_time ? vals.end_time.format('HH:mm') : '19:00'
+      }
+
+      await api('/staff/assign-day-shift', {
+        method: 'POST',
+        body: {
+          staff_id: quickShiftTarget.staff.id,
+          weekday: quickShiftTarget.dayObj.weekday,
+          is_off: isOff,
+          start_time: startTime,
+          end_time: endTime,
+        },
+      })
+      message.success(isOff ? 'Đã gán ngày nghỉ ca cho nhân viên' : 'Đã cập nhật ca trực thành công')
+      setQuickShiftModalOpen(false)
+      loadRoster(rosterWeekStart, rosterRoleFilter, rosterSpecFilter)
+    } catch (e) {
+      message.error(e.message || 'Không thể cập nhật ca trực')
+    } finally {
+      setQuickShiftSaving(false)
+    }
+  }
+
+  const handleCheckAvailability = async (targetDate = availDate, specId = availSpecId) => {
+    setAvailLoading(true)
+    try {
+      const dateStr = (targetDate || dayjs()).format('YYYY-MM-DD')
+      const body = { date: dateStr }
+      if (specId && specId !== 'all') {
+        body.specialty_id = specId
+      }
+      const res = await api('/staff/check-availability', {
+        method: 'POST',
+        body,
+      })
+      setAvailResults(res?.technicians || [])
+    } catch (e) {
+      message.error(e.message || 'Không thể kiểm tra độ sẵn sàng của kỹ thuật viên')
+    } finally {
+      setAvailLoading(false)
+    }
+  }
+
+  const openAvailabilityModal = () => {
+    setAvailModalOpen(true)
+    handleCheckAvailability(availDate, availSpecId)
+  }
+
+  // Cột bảng phân công Ma trận tuần
+  const rosterColumns = useMemo(() => {
+    const cols = [
+      {
+        title: 'Nhân viên / Kỹ thuật viên',
+        key: 'staff',
+        width: 250,
+        fixed: 'left',
+        render: (_, st) => (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <Avatar
+              style={{
+                background: st.role === 'technician' ? '#0f8b8d' : st.role === 'receptionist' ? '#8b5cf6' : '#3b82f6',
+                flexShrink: 0,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.08)',
+              }}
+              size={36}
+            >
+              {(st.full_name || st.username || 'U')[0].toUpperCase()}
+            </Avatar>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontWeight: 600, color: '#0f172a', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {st.full_name || st.username}
+                </span>
+                <Tag color={st.role === 'technician' ? 'cyan' : st.role === 'receptionist' ? 'purple' : 'blue'} style={{ fontSize: 10, margin: 0, padding: '0 4px', borderRadius: 4 }}>
+                  {ROLE_LABEL[st.role] || st.role}
+                </Tag>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>
+                @{st.username} {st.phone ? `• ${st.phone}` : ''}
+              </div>
+              <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                {st.specialties && st.specialties.length > 0 ? (
+                  st.specialties.slice(0, 2).map((sp) => (
+                    <Tag key={sp.id} color="teal" style={{ fontSize: 10, margin: 0, padding: '0 4px', borderRadius: 4 }}>
+                      {sp.name_vi}
+                    </Tag>
+                  ))
+                ) : (
+                  <span style={{ fontSize: 10, color: '#94a3b8', fontStyle: 'italic' }}>Chưa có chuyên môn</span>
+                )}
+                {st.specialties && st.specialties.length > 2 && (
+                  <Tooltip title={st.specialties.slice(2).map((s) => s.name_vi).join(', ')}>
+                    <Tag style={{ fontSize: 10, margin: 0, cursor: 'pointer' }}>+{st.specialties.length - 2}</Tag>
+                  </Tooltip>
+                )}
+              </div>
+            </div>
+          </div>
+        ),
+      },
+    ]
+
+    const days = rosterData?.week_days || []
+    days.forEach((dayObj) => {
+      cols.push({
+        title: (
+          <div style={{ textAlign: 'center', padding: '2px 0' }}>
+            <div style={{ fontWeight: dayObj.is_today ? 700 : 600, color: dayObj.is_today ? '#0f8b8d' : '#1e293b', fontSize: 13 }}>
+              {dayObj.day_label}
+            </div>
+            <div style={{ fontSize: 11, color: dayObj.is_today ? '#0f8b8d' : '#64748b', fontWeight: dayObj.is_today ? 700 : 400 }}>
+              {dayjs(dayObj.date).format('DD/MM')}
+              {dayObj.is_today && <Tag color="success" style={{ marginLeft: 4, fontSize: 9, padding: '0 3px', lineHeight: '14px' }}>Hôm nay</Tag>}
+            </div>
+          </div>
+        ),
+        key: `day_${dayObj.weekday}`,
+        width: 130,
+        render: (_, st) => {
+          const leave = (st.leaves || []).find((l) => l.date_from <= dayObj.date && l.date_to >= dayObj.date)
+          const shift = st.shifts_map ? st.shifts_map[dayObj.weekday] : null
+
+          if (leave) {
+            return (
+              <div
+                style={{
+                  background: '#fef2f2',
+                  border: '1px dashed #fca5a5',
+                  borderRadius: 8,
+                  padding: '6px 8px',
+                  textAlign: 'center',
+                }}
+              >
+                <Tag color="error" style={{ margin: 0, fontSize: 11, fontWeight: 600, padding: '0 6px', borderRadius: 4 }}>
+                  🏖️ Nghỉ phép
+                </Tag>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: '#991b1b',
+                    marginTop: 3,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={leave.reason || 'Lý do cá nhân'}
+                >
+                  {leave.reason || 'Lý do cá nhân'}
+                </div>
+              </div>
+            )
+          }
+
+          if (shift) {
+            return (
+              <div
+                onClick={isManager ? () => handleOpenQuickShift(st, dayObj, shift, false) : undefined}
+                style={{
+                  background: '#f0fdfa',
+                  border: '1px solid #99f6e4',
+                  borderRadius: 8,
+                  padding: '6px 8px',
+                  cursor: isManager ? 'pointer' : 'default',
+                  transition: 'all 0.15s ease',
+                  textAlign: 'center',
+                }}
+                onMouseEnter={isManager ? (e) => {
+                  e.currentTarget.style.borderColor = '#0f8b8d'
+                  e.currentTarget.style.boxShadow = '0 2px 6px rgba(15, 139, 141, 0.2)'
+                  e.currentTarget.style.background = '#e6fffa'
+                } : undefined}
+                onMouseLeave={isManager ? (e) => {
+                  e.currentTarget.style.borderColor = '#99f6e4'
+                  e.currentTarget.style.boxShadow = 'none'
+                  e.currentTarget.style.background = '#f0fdfa'
+                } : undefined}
+                title={isManager ? 'Bấm để đổi giờ ca hoặc gán nghỉ' : undefined}
+              >
+                <div style={{ color: '#0f8b8d', fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                  <ClockCircleOutlined style={{ fontSize: 11 }} />
+                  <span>{shift.start_time} - {shift.end_time}</span>
+                </div>
+                <div style={{ marginTop: 2 }}>
+                  <Tag color="cyan" style={{ fontSize: 10, margin: 0, padding: '0 4px', borderRadius: 4, lineHeight: '16px' }}>
+                    Có ca trực
+                  </Tag>
+                </div>
+              </div>
+            )
+          }
+
+          return (
+            <div
+              onClick={isManager ? () => handleOpenQuickShift(st, dayObj, null, false) : undefined}
+              style={{
+                background: '#f8fafc',
+                border: '1px dashed #e2e8f0',
+                borderRadius: 8,
+                padding: '6px 8px',
+                textAlign: 'center',
+                cursor: isManager ? 'pointer' : 'default',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={isManager ? (e) => {
+                e.currentTarget.style.borderColor = '#0f8b8d'
+                e.currentTarget.style.background = '#f0fdfa'
+              } : undefined}
+              onMouseLeave={isManager ? (e) => {
+                e.currentTarget.style.borderColor = '#e2e8f0'
+                e.currentTarget.style.background = '#f8fafc'
+              } : undefined}
+              title={isManager ? 'Bấm để gán ca trực cho nhân viên này' : undefined}
+            >
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>— Nghỉ ca</span>
+              {isManager && (
+                <div style={{ fontSize: 10, color: '#0f8b8d', marginTop: 1, fontWeight: 500 }}>
+                  + Gán ca
+                </div>
+              )}
+            </div>
+          )
+        },
+      })
+    })
+
+    return cols
+  }, [rosterData, isManager])
 
   const loadStaff = useCallback(async () => {
     setStaffLoading(true)
@@ -1010,12 +1336,19 @@ export default function StaffManagement() {
       dataIndex: 'is_active',
       render: (active, st) => {
         const isSelf = st.user_id === user?.id || st.username === user?.username
+        if (!isManager) {
+          return (
+            <Tag color={active ? 'success' : 'default'} style={{ borderRadius: 4 }}>
+              {active ? '🟢 Hoạt động' : '⚪ Đã khóa'}
+            </Tag>
+          )
+        }
         return (
           <span onClick={(e) => e.stopPropagation()}>
             <Tooltip title={isSelf ? 'Không thể tự khóa tài khoản đang đăng nhập' : ''}>
               <Switch
                 checked={active}
-                disabled={!isManager || isSelf}
+                disabled={isSelf}
                 onClick={(_, e) => e?.stopPropagation?.()}
                 onChange={() => toggleStaffActive(st)}
                 checkedChildren="Hoạt động"
@@ -1156,34 +1489,47 @@ export default function StaffManagement() {
       width: 140,
       render: (_, r) => (
         <Space onClick={(e) => e.stopPropagation()}>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={(e) => {
-              e.stopPropagation()
-              openRoleModal(r)
-            }}
-            disabled={!isManager}
-          >
-            Sửa
-          </Button>
-          {r.is_system ? (
-            <Tooltip title="Vai trò hệ thống mặc định, không thể xóa">
-              <Button size="small" danger disabled icon={<DeleteOutlined />} />
-            </Tooltip>
-          ) : (
-            <Tooltip title="Xóa vai trò tùy chỉnh này">
+          {isManager ? (
+            <>
               <Button
                 size="small"
-                danger
-                icon={<DeleteOutlined />}
-                disabled={!isManager}
+                icon={<EditOutlined />}
                 onClick={(e) => {
                   e.stopPropagation()
-                  confirmDeleteRole(r)
+                  openRoleModal(r)
                 }}
-              />
-            </Tooltip>
+              >
+                Sửa
+              </Button>
+              {r.is_system ? (
+                <Tooltip title="Vai trò hệ thống mặc định, không thể xóa">
+                  <Button size="small" danger disabled icon={<DeleteOutlined />} />
+                </Tooltip>
+              ) : (
+                <Tooltip title="Xóa vai trò tùy chỉnh này">
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      confirmDeleteRole(r)
+                    }}
+                  />
+                </Tooltip>
+              )}
+            </>
+          ) : (
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                openRoleDetails(r)
+              }}
+            >
+              Xem
+            </Button>
           )}
         </Space>
       ),
@@ -1253,29 +1599,42 @@ export default function StaffManagement() {
       width: 130,
       render: (_, spec) => (
         <Space onClick={(e) => e.stopPropagation()}>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={(e) => {
-              e.stopPropagation()
-              openSpecModal(spec)
-            }}
-            disabled={!isManager}
-          >
-            Sửa
-          </Button>
-          <Tooltip title="Xóa chuyên môn này">
+          {isManager ? (
+            <>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openSpecModal(spec)
+                }}
+              >
+                Sửa
+              </Button>
+              <Tooltip title="Xóa chuyên môn này">
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    confirmDeleteSpecialty(spec)
+                  }}
+                />
+              </Tooltip>
+            </>
+          ) : (
             <Button
               size="small"
-              danger
-              icon={<DeleteOutlined />}
-              disabled={!isManager}
+              icon={<EyeOutlined />}
               onClick={(e) => {
                 e.stopPropagation()
-                confirmDeleteSpecialty(spec)
+                openSpecDetails(spec)
               }}
-            />
-          </Tooltip>
+            >
+              Xem
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -1302,51 +1661,61 @@ export default function StaffManagement() {
       title: 'Trạng thái hoạt động',
       dataIndex: 'is_active',
       key: 'is_active',
-      render: (active, r) => (
-        <span onClick={(e) => e.stopPropagation()}>
-          <Switch
-            checked={active}
-            disabled={!isManager}
-            onClick={(_, e) => e?.stopPropagation?.()}
-            onChange={() => toggleResourceActive(r)}
-            checkedChildren="Sẵn sàng"
-            unCheckedChildren="Tạm ngưng"
-          />
-        </span>
-      ),
-    },
-    {
-      title: 'Thao tác',
-      key: 'act',
-      width: 140,
-      render: (_, r) => (
-        <Space onClick={(e) => e.stopPropagation()}>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={(e) => {
-              e.stopPropagation()
-              openResModal(r)
-            }}
-            disabled={!isManager}
-          >
-            Sửa
-          </Button>
-          <Tooltip title="Xóa vĩnh viễn cơ sở vật chất">
-            <Button
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-              disabled={!isManager}
-              onClick={(e) => {
-                e.stopPropagation()
-                confirmDeleteResource(r)
-              }}
+      render: (active, r) => {
+        if (!isManager) {
+          return (
+            <Tag color={active ? 'success' : 'default'} style={{ borderRadius: 4 }}>
+              {active ? '🟢 Sẵn sàng' : '⚪ Tạm ngưng'}
+            </Tag>
+          )
+        }
+        return (
+          <span onClick={(e) => e.stopPropagation()}>
+            <Switch
+              checked={active}
+              onClick={(_, e) => e?.stopPropagation?.()}
+              onChange={() => toggleResourceActive(r)}
+              checkedChildren="Sẵn sàng"
+              unCheckedChildren="Tạm ngưng"
             />
-          </Tooltip>
-        </Space>
-      ),
+          </span>
+        )
+      },
     },
+    ...(isManager
+      ? [
+          {
+            title: 'Thao tác',
+            key: 'act',
+            width: 140,
+            render: (_, r) => (
+              <Space onClick={(e) => e.stopPropagation()}>
+                <Button
+                  size="small"
+                  icon={<EditOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openResModal(r)
+                  }}
+                >
+                  Sửa
+                </Button>
+                <Tooltip title="Xóa vĩnh viễn cơ sở vật chất">
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      confirmDeleteResource(r)
+                    }}
+                  />
+                </Tooltip>
+              </Space>
+            ),
+          },
+        ]
+      : []),
   ]
 
   return (
@@ -1360,12 +1729,22 @@ export default function StaffManagement() {
         </div>
 
         <Space wrap>
-          <Button icon={<ReloadOutlined />} onClick={() => { loadStaff(); loadResources() }}>Làm mới</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => { loadStaff(); loadResources(); if (activeTab === 'roster') loadRoster() }}>Làm mới</Button>
           {isManager && (
             <>
               {activeTab === 'staff' && (
                 <Button type="primary" icon={<UserAddOutlined />} onClick={() => openStaffModal(null)}>
                   Thêm nhân viên
+                </Button>
+              )}
+              {activeTab === 'roster' && (
+                <Button
+                  type="primary"
+                  icon={<StarOutlined />}
+                  onClick={openAvailabilityModal}
+                  style={{ background: 'linear-gradient(135deg, #0f8b8d, #14b8a6)', border: 'none' }}
+                >
+                  Tra cứu & Gợi ý KTV rảnh
                 </Button>
               )}
               {activeTab === 'roles' && (
@@ -1501,6 +1880,135 @@ export default function StaffManagement() {
                     }}
                   />
                 </Card>
+              </div>
+            ),
+          },
+          {
+            key: 'roster',
+            label: (<span><ScheduleOutlined /> Phân công ca trực</span>),
+            children: (
+              <div>
+                {/* Roster Controls: Tuần & Bộ lọc */}
+                <div
+                  style={{
+                    background: '#fff',
+                    padding: '14px 18px',
+                    borderRadius: 12,
+                    border: '1px solid #e2e8f0',
+                    marginBottom: 16,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                  }}
+                >
+                  <Space wrap size={10} style={{ alignItems: 'center' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', background: '#f1f5f9', borderRadius: 8, padding: 3, border: '1px solid #e2e8f0' }}>
+                      <Button size="small" type="text" icon={<LeftOutlined />} onClick={handlePrevWeek} title="Tuần trước" />
+                      <Button size="small" type="text" onClick={handleCurrentWeek} style={{ fontWeight: 600, fontSize: 12, color: '#0f8b8d' }}>
+                        Tuần này
+                      </Button>
+                      <Button size="small" type="text" icon={<RightOutlined />} onClick={handleNextWeek} title="Tuần sau" />
+                    </div>
+
+                    {rosterData && (
+                      <Tag color="cyan" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 6, fontWeight: 600 }}>
+                        <CalendarOutlined style={{ marginRight: 6 }} />
+                        {dayjs(rosterData.week_start).format('DD/MM/YYYY')} — {dayjs(rosterData.week_end).format('DD/MM/YYYY')}
+                      </Tag>
+                    )}
+
+                    <Divider type="vertical" style={{ height: 24 }} />
+
+                    <Select
+                      placeholder="Vai trò nhân sự"
+                      value={rosterRoleFilter}
+                      onChange={setRosterRoleFilter}
+                      style={{ width: 180 }}
+                      options={[
+                        { value: 'technician', label: '✂️ Kỹ thuật viên' },
+                        { value: 'all', label: 'Tất cả nhân sự' },
+                        { value: 'receptionist', label: '💁 Lễ tân' },
+                        { value: 'manager', label: '👔 Quản lý' },
+                      ]}
+                    />
+
+                    <Select
+                      placeholder="Lọc theo chuyên môn"
+                      value={rosterSpecFilter}
+                      onChange={setRosterSpecFilter}
+                      style={{ width: 230 }}
+                      options={[
+                        { value: 'all', label: 'Tất cả chuyên môn' },
+                        ...specialties.map((s) => ({
+                          value: s.id,
+                          label: `${s.name_vi} (${s.species_scope === 'cat' ? '🐱 Mèo' : s.species_scope === 'dog' ? '🐶 Chó' : '🐶🐱'})`,
+                        })),
+                      ]}
+                    />
+                  </Space>
+
+                  <Space size={10} wrap>
+                    {isManager && (
+                      <Button
+                        type="primary"
+                        icon={<StarOutlined />}
+                        onClick={openAvailabilityModal}
+                        style={{
+                          background: 'linear-gradient(135deg, #0f8b8d, #14b8a6)',
+                          border: 'none',
+                          boxShadow: '0 2px 6px rgba(15, 139, 141, 0.25)',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Tra cứu & Gợi ý KTV rảnh
+                      </Button>
+                    )}
+                    <Button icon={<ReloadOutlined />} onClick={() => loadRoster(rosterWeekStart, rosterRoleFilter, rosterSpecFilter)} loading={rosterLoading}>
+                      Tải lại
+                    </Button>
+                  </Space>
+                </div>
+
+                {/* Bảng phân công Matrix */}
+                <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+                  <Table
+                    loading={rosterLoading}
+                    dataSource={rosterData?.staff || []}
+                    columns={rosterColumns}
+                    rowKey="id"
+                    scroll={{ x: 1200 }}
+                    pagination={false}
+                    locale={{
+                      emptyText: (
+                        <Empty
+                          image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description="Không tìm thấy nhân sự phù hợp với tiêu chí lọc"
+                        />
+                      ),
+                    }}
+                  />
+                </Card>
+
+                {/* Hướng dẫn & Chú thích */}
+                <div style={{ marginTop: 12, display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: '#64748b' }}>
+                  <span style={{ fontWeight: 600 }}>Chú thích:</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, background: '#f0fdfa', border: '1px solid #99f6e4' }} /> Có ca trực {isManager && '(Bấm vào để sửa nhanh)'}
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, background: '#f8fafc', border: '1px dashed #cbd5e1' }} /> Nghỉ ca
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, background: '#fef2f2', border: '1px dashed #fca5a5' }} /> Nghỉ phép
+                  </span>
+                  {isManager && (
+                    <span style={{ color: '#0f8b8d', fontStyle: 'italic', marginLeft: 'auto' }}>
+                      💡 Quản lý có thể nhấp chuột trực tiếp vào bất kỳ ô ca trực nào để phân công hoặc đổi giờ làm việc.
+                    </span>
+                  )}
+                </div>
               </div>
             ),
           },
@@ -2907,6 +3415,296 @@ export default function StaffManagement() {
             <Input.Password prefix={<LockOutlined style={{ color: '#0f8b8d' }} />} placeholder="Nhập lại chính xác mật khẩu mới" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* ===== MODAL GÁN / SỬA CA TRỰC NHANH CHO 1 NGÀY ===== */}
+      <Modal
+        centered
+        title={
+          <Space>
+            <ScheduleOutlined style={{ color: '#0f8b8d' }} />
+            <span>
+              Phân công ca trực: {quickShiftTarget?.staff?.full_name || quickShiftTarget?.staff?.username} ({quickShiftTarget?.dayObj?.day_label} - {quickShiftTarget?.dayObj?.date ? dayjs(quickShiftTarget.dayObj.date).format('DD/MM/YYYY') : ''})
+            </span>
+          </Space>
+        }
+        open={quickShiftModalOpen}
+        onCancel={() => setQuickShiftModalOpen(false)}
+        onOk={handleSaveQuickShift}
+        okText="Lưu phân công"
+        confirmLoading={quickShiftSaving}
+        width={520}
+      >
+        <Form form={quickShiftForm} layout="vertical" initialValues={{ mode: 'full' }}>
+          <Paragraph type="secondary" style={{ marginBottom: 14 }}>
+            Điều chỉnh ca trực làm việc cho nhân viên trong ngày này. Hệ thống sẽ cập nhật ngay vào bảng phân công lịch tuần.
+          </Paragraph>
+
+          <Form.Item name="mode" label="Lựa chọn ca làm việc" rules={[{ required: true }]}>
+            <Radio.Group style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <Radio value="full">Ca chuẩn toàn thời gian (08:00 - 19:00)</Radio>
+              <Radio value="morning">Ca sáng (08:00 - 13:30)</Radio>
+              <Radio value="afternoon">Ca chiều / tối (13:30 - 19:00)</Radio>
+              <Radio value="custom">Tùy chỉnh khoảng giờ cụ thể</Radio>
+              <Radio value="off" style={{ color: '#ef4444' }}>Nghỉ ca (Không làm việc ngày này)</Radio>
+            </Radio.Group>
+          </Form.Item>
+
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.mode !== cur.mode}
+          >
+            {({ getFieldValue }) => {
+              const mode = getFieldValue('mode')
+              if (mode !== 'custom') return null
+              return (
+                <Row gutter={12} style={{ marginTop: 10 }}>
+                  <Col span={12}>
+                    <Form.Item
+                      name="start_time"
+                      label="Giờ bắt đầu"
+                      rules={[{ required: true, message: 'Chọn giờ bắt đầu' }]}
+                    >
+                      <TimePicker format="HH:mm" minuteStep={15} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item
+                      name="end_time"
+                      label="Giờ kết thúc"
+                      rules={[{ required: true, message: 'Chọn giờ kết thúc' }]}
+                    >
+                      <TimePicker format="HH:mm" minuteStep={15} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                </Row>
+              )
+            }}
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* ===== MODAL TRA CỨU & GỢI Ý KTV THEO CA VÀ CHUYÊN MÔN ===== */}
+      <Modal
+        centered
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 8, background: '#0f8b8d', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+              <StarOutlined />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: '#0f172a' }}>
+                Hệ thống Gợi ý & Phân công Kỹ thuật viên
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', fontWeight: 400 }}>
+                Tự động kiểm tra ca trực, chuyên môn dịch vụ và đề xuất người rảnh tối ưu
+              </div>
+            </div>
+          </div>
+        }
+        open={availModalOpen}
+        onCancel={() => setAvailModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setAvailModalOpen(false)}>
+            Đóng
+          </Button>,
+        ]}
+        width={780}
+      >
+        <div style={{ marginBottom: 16 }}>
+          {/* Bộ điều khiển ngày & chuyên môn */}
+          <Card size="small" style={{ background: '#f8fafc', borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+            <Row gutter={[12, 12]} align="middle">
+              <Col xs={24} sm={10}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
+                  📅 Chọn ngày hẹn cần phục vụ:
+                </div>
+                <DatePicker
+                  value={availDate}
+                  onChange={(d) => {
+                    setAvailDate(d)
+                    handleCheckAvailability(d, availSpecId)
+                  }}
+                  format="DD/MM/YYYY"
+                  allowClear={false}
+                  style={{ width: '100%' }}
+                />
+              </Col>
+              <Col xs={24} sm={10}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
+                  🏷️ Yêu cầu Chuyên môn tay nghề:
+                </div>
+                <Select
+                  value={availSpecId}
+                  onChange={(s) => {
+                    setAvailSpecId(s)
+                    handleCheckAvailability(availDate, s)
+                  }}
+                  placeholder="Tất cả kỹ năng chuyên môn..."
+                  allowClear
+                  style={{ width: '100%' }}
+                  options={[
+                    { value: null, label: '✨ Tất cả chuyên môn kỹ thuật' },
+                    ...specialties.map((s) => ({
+                      value: s.id,
+                      label: `${s.name_vi} (${s.species_scope === 'cat' ? '🐱 Mèo' : s.species_scope === 'dog' ? '🐶 Chó' : '🐶🐱'})`,
+                    })),
+                  ]}
+                />
+              </Col>
+              <Col xs={24} sm={4} style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <Button
+                  type="primary"
+                  icon={<SearchOutlined />}
+                  onClick={() => handleCheckAvailability(availDate, availSpecId)}
+                  loading={availLoading}
+                  style={{ width: '100%', marginTop: 22, background: '#0f8b8d', borderColor: '#0f8b8d' }}
+                >
+                  Tra cứu
+                </Button>
+              </Col>
+            </Row>
+          </Card>
+
+          {/* Quy tắc logic hệ thống */}
+          <Alert
+            type="info"
+            showIcon
+            message="Quy tắc phân công & Gợi ý tự động"
+            description={
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: '#475569', lineHeight: 1.6 }}>
+                <li><strong>Ưu tiên cao nhất (100 điểm):</strong> Kỹ thuật viên có ca trực, sở hữu đúng chứng chỉ chuyên môn và đang rảnh (chưa có lịch hẹn).</li>
+                <li><strong>Gán tay khi thiếu người (65 điểm):</strong> Khi không còn thợ đúng chuyên môn rảnh ca, Quản lý vẫn có thể chủ động gán tay kỹ thuật viên rảnh khác đang có ca trực để linh hoạt vận hành.</li>
+                <li><strong>Loại trừ tự động:</strong> Nhân sự đang trong thời gian nghỉ phép hoặc không có ca trực trong ngày sẽ nhận điểm đánh giá 0 - 20 và không khuyến nghị.</li>
+              </ul>
+            }
+            style={{ marginBottom: 16, borderRadius: 10 }}
+          />
+
+          {/* Danh sách KTV được xếp hạng */}
+          <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+            {availLoading ? (
+              <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                <ReloadOutlined spin style={{ fontSize: 24, color: '#0f8b8d', marginBottom: 12 }} />
+                <div style={{ color: '#64748b', fontSize: 13 }}>Đang phân tích ca trực và xếp hạng kỹ thuật viên...</div>
+              </div>
+            ) : availResults.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="Không tìm thấy kỹ thuật viên nào trong hệ thống"
+              />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {availResults.map((tech, idx) => {
+                  const isTopMatch = tech.score >= 85
+                  const isManualFallback = tech.score === 65
+                  return (
+                    <Card
+                      key={tech.staff_id}
+                      size="small"
+                      style={{
+                        borderRadius: 12,
+                        border: isTopMatch ? '1px solid #14b8a6' : isManualFallback ? '1px solid #fed7aa' : '1px solid #e2e8f0',
+                        background: isTopMatch ? '#f0fdfa' : isManualFallback ? '#fffbeb' : '#fff',
+                        boxShadow: isTopMatch ? '0 2px 8px rgba(20, 184, 166, 0.12)' : 'none',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                          <Badge count={idx + 1} style={{ backgroundColor: isTopMatch ? '#0f8b8d' : isManualFallback ? '#f59e0b' : '#94a3b8' }}>
+                            <Avatar size={42} style={{ background: isTopMatch ? '#0f8b8d' : '#64748b' }}>
+                              {(tech.full_name || tech.username || 'T')[0].toUpperCase()}
+                            </Avatar>
+                          </Badge>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <Text strong style={{ fontSize: 14, color: '#0f172a' }}>
+                                {tech.full_name}
+                              </Text>
+                              <Tag color={tech.badge_color} style={{ fontSize: 11, borderRadius: 4, margin: 0, fontWeight: 600 }}>
+                                {tech.badge_text}
+                              </Tag>
+                              <Tag color="geekblue" style={{ fontSize: 11, borderRadius: 4, margin: 0 }}>
+                                Điểm: {tech.score}/100
+                              </Tag>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                              @{tech.username} {tech.phone ? `• SĐT: ${tech.phone}` : ''}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Button gán tay / xác nhận */}
+                        {isManager && (
+                          <div>
+                            <Button
+                              size="small"
+                              type={isTopMatch ? 'primary' : 'default'}
+                              style={isTopMatch ? { background: '#0f8b8d', borderColor: '#0f8b8d' } : undefined}
+                              onClick={() => {
+                                message.success(`Đã xác nhận kỹ thuật viên ${tech.full_name} (${tech.badge_text}) cho phân công công việc.`)
+                              }}
+                              disabled={tech.is_on_leave}
+                            >
+                              {tech.is_on_leave ? 'Đang nghỉ phép' : isTopMatch ? '✓ Đề xuất tối ưu' : 'Gán tay khi thiếu thợ'}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Chi tiết ca & Chuyên môn */}
+                      <Divider style={{ margin: '8px 0' }} />
+                      <Row gutter={[12, 6]} style={{ fontSize: 12 }}>
+                        <Col xs={24} sm={10}>
+                          <span style={{ color: '#64748b' }}>Ca làm việc: </span>
+                          {tech.shift ? (
+                            <strong style={{ color: '#0f8b8d' }}>
+                              <ClockCircleOutlined style={{ marginRight: 4 }} />
+                              {tech.shift.start_time} - {tech.shift.end_time}
+                            </strong>
+                          ) : (
+                            <span style={{ color: '#94a3b8' }}>Không có ca trực</span>
+                          )}
+                        </Col>
+                        <Col xs={24} sm={14}>
+                          <span style={{ color: '#64748b' }}>Lịch hẹn trong ngày: </span>
+                          <Tag color={tech.day_bookings_count === 0 ? 'green' : 'orange'} style={{ margin: 0 }}>
+                            {tech.day_bookings_count} lịch hẹn
+                          </Tag>
+                        </Col>
+                        <Col span={24} style={{ marginTop: 4 }}>
+                          <span style={{ color: '#64748b' }}>Chuyên môn hiện có: </span>
+                          {tech.specialties && tech.specialties.length > 0 ? (
+                            tech.specialties.map((s) => (
+                              <Tag
+                                key={s.id}
+                                color={availSpecId && s.id === availSpecId ? 'cyan' : 'default'}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: availSpecId && s.id === availSpecId ? 700 : 400,
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {availSpecId && s.id === availSpecId ? '⭐ ' : ''}{s.name_vi}
+                              </Tag>
+                            ))
+                          ) : (
+                            <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Chưa có kỹ năng chuyên môn</span>
+                          )}
+                        </Col>
+                        <Col span={24} style={{ marginTop: 4 }}>
+                          <div style={{ background: '#f8fafc', padding: '6px 10px', borderRadius: 6, fontSize: 11, color: '#475569' }}>
+                            <strong>Đánh giá hệ thống: </strong> {tech.reason}
+                          </div>
+                        </Col>
+                      </Row>
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       </Modal>
     </div>
   )

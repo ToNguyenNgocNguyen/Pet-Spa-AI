@@ -10,6 +10,7 @@ import Account from './pages/Account.jsx'
 import RebookReminders from './pages/RebookReminders.jsx'
 import AiAdmin from './pages/AiAdmin.jsx'
 import Analytics from './pages/Analytics.jsx'
+import Notifications from './pages/Notifications.jsx'
 
 // Danh sách route trong khu vực ứng dụng nội bộ (/app)
 export const APP_ROUTES = [
@@ -26,6 +27,7 @@ export const APP_ROUTES = [
   { path: '/app/quan-tri-ai', label: 'Quản trị AI & SOP', element: <AiAdmin />, roles: ['manager'] },
   { path: '/app/ho-so-spa', label: 'Hồ sơ spa', element: <SpaProfile />, roles: ['manager'] },
   { path: '/app/tai-khoan', label: 'Tài khoản', element: <Account />, roles: null, public: true },
+  { path: '/app/thong-bao', label: 'Thông báo', element: <Notifications />, roles: null, public: true, hideInMenuFor: ['customer', 'receptionist', 'manager', 'technician'] },
 ]
 
 export const labelFor = (route, user) => {

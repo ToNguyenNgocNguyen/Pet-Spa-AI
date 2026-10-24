@@ -133,7 +133,16 @@ class PetViewSet(viewsets.ModelViewSet):
             ).distinct()
         q = self.request.query_params.get('q')
         if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(client__full_name__icontains=q))
+            qs = qs.filter(Q(name__icontains=q) | Q(breed__icontains=q) | Q(client__full_name__icontains=q))
+        species = self.request.query_params.get('species')
+        if species:
+            qs = qs.filter(species=species)
+        size_class = self.request.query_params.get('size_class')
+        if size_class:
+            qs = qs.filter(size_class=size_class)
+        ordering = self.request.query_params.get('ordering')
+        if ordering:
+            qs = qs.order_by(ordering)
         client_id = self.request.query_params.get('client') or self.request.query_params.get('client_id')
         if client_id and u.role != Role.CUSTOMER:
             qs = qs.filter(client_id=client_id)

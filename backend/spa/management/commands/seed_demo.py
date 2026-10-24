@@ -154,6 +154,7 @@ class Command(BaseCommand):
         self._staff_and_resources()
         self._bookings()
         self._ai_data()
+        self._seed_notifications()
 
     def _spa(self):
         Spa.objects.update_or_create(id=1, defaults=dict(
@@ -406,4 +407,137 @@ class Command(BaseCommand):
 
         # 4. Quét và tạo các bản ghi nhắc tái spa mẫu
         ai_services.generate_rebook_reminders()
+
+    def _seed_notifications(self):
+        """Tạo dữ liệu mẫu thông báo chuẩn vai trò cho từng nhóm người dùng."""
+        from notifications.models import Notification
+
+        Notification.objects.all().delete()
+        users = {u.username: u for u in User.objects.all()}
+        items = []
+
+        # 1. Khách hàng (khach1 - Nguyễn Thu Hà)
+        if 'khach1' in users:
+            u = users['khach1']
+            items.extend([
+                Notification(
+                    user=u,
+                    kind='booking_confirmed',
+                    title='Lịch hẹn bé Bông đã được xác nhận',
+                    body='Lịch hẹn tắm sấy lúc 09:30 ngày mai của bé Bông đã được xác nhận và xếp Kỹ thuật viên.',
+                    ref_type='booking',
+                    link='/app/lich-hen',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='rebook_reminder',
+                    title='Nhắc lịch spa định kỳ cho bé Mimi',
+                    body='Đã 3 tuần kể từ lần spa gần nhất của bé Mimi. Đặt lịch sớm để nhận ưu đãi và khung giờ ưng ý!',
+                    ref_type='reminder',
+                    link='/app/nhac-tai-spa',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='invoice_paid',
+                    title='Thanh toán thành công',
+                    body='Đã xác nhận thanh toán hóa đơn dịch vụ #1 số tiền 150.000đ. Cảm ơn bạn đã tin tưởng dịch vụ!',
+                    ref_type='invoice',
+                    link='/app/hoa-don',
+                    is_read=True,
+                ),
+                Notification(
+                    user=u,
+                    kind='booking_completed',
+                    title='Bé Mimi đã làm spa xong!',
+                    body='Dịch vụ của bé Mimi đã hoàn tất thơm tho, mời bạn ghé quầy lễ tân để đón bé.',
+                    ref_type='booking',
+                    link='/app/lich-hen',
+                    is_read=True,
+                ),
+            ])
+
+        # 2. Quản lý (quanly - Chủ spa)
+        if 'quanly' in users:
+            u = users['quanly']
+            items.extend([
+                Notification(
+                    user=u,
+                    kind='booking_new',
+                    title='Lịch hẹn mới chờ duyệt',
+                    body='Khách hàng Nguyễn Thu Hà vừa đặt lịch Tắm dưỡng cho bé Bông trên website.',
+                    ref_type='booking',
+                    link='/app/lich-hen',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='staff_timeoff',
+                    title='Đơn xin nghỉ phép mới',
+                    body='Kỹ thuật viên Kiều Nghiên gửi đơn xin nghỉ phép 1 ngày (28/10). Vui lòng xét duyệt.',
+                    ref_type='staff',
+                    link='/app/nhan-su',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='system',
+                    title='Báo cáo doanh thu tuần',
+                    body='Doanh thu tuần này đạt 18.500.000đ, tăng 15% so với tuần trước. Xem chi tiết tại Thống kê.',
+                    ref_type='analytics',
+                    link='/app/thong-ke',
+                    is_read=True,
+                ),
+            ])
+
+        # 3. Lễ tân (letan)
+        if 'letan' in users:
+            u = users['letan']
+            items.extend([
+                Notification(
+                    user=u,
+                    kind='booking_new',
+                    title='Lịch hẹn mới chờ duyệt',
+                    body='Bé Bông đặt lịch Tắm dưỡng vào 10:00 ngày mai. Vui lòng kiểm tra và duyệt lịch.',
+                    ref_type='booking',
+                    link='/app/lich-hen',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='booking_completed',
+                    title='Dịch vụ hoàn tất, chờ thu tiền',
+                    body='Bé Mimi đã xong dịch vụ tại phòng spa, sẵn sàng xuất hóa đơn và thu tiền khách.',
+                    ref_type='booking',
+                    link='/app/hoa-don',
+                    is_read=False,
+                ),
+            ])
+
+        # 4. Kỹ thuật viên (ktv1)
+        if 'ktv1' in users:
+            u = users['ktv1']
+            items.extend([
+                Notification(
+                    user=u,
+                    kind='booking_assigned',
+                    title='Bạn được giao một lịch hẹn mới',
+                    body='Ca phục vụ bé Bông - Dịch vụ Tắm cơ bản lúc 09:30 ngày mai.',
+                    ref_type='booking',
+                    link='/app/lich-hen',
+                    is_read=False,
+                ),
+                Notification(
+                    user=u,
+                    kind='staff_timeoff_status',
+                    title='Đơn nghỉ phép đã được phê duyệt',
+                    body='Quản lý đã phê duyệt đơn xin nghỉ phép ngày 28/10 của bạn.',
+                    ref_type='staff',
+                    link='/app/nhan-su',
+                    is_read=True,
+                ),
+            ])
+
+        Notification.objects.bulk_create(items)
 

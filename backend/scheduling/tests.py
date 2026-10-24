@@ -215,9 +215,18 @@ class RoleScopeTests(BaseCase):
     def test_dashboard_front_desk_only_and_revenue_matches_invoices(self):
         self.assertEqual(self.as_user('khach1').get(f'{API}/dashboard/today').status_code, 403)
         self.assertEqual(self.as_user('ktv1').get(f'{API}/dashboard/today').status_code, 403)
+        self.assertEqual(self.as_user('khach1').get(f'{API}/dashboard/daily').status_code, 403)
         r = self.as_user('letan').get(f'{API}/dashboard/today')
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data['unpaid_count'], Invoice.objects.filter(status='unpaid').count())
+        self.assertIn('feed', r.data)
+        self.assertIn('staff_on_duty', r.data)
+        self.assertIn('resources_summary', r.data)
+        self.assertIn('in_service_count', r.data)
+        # Quản lý cũng có quyền xem dashboard ngày
+        r_mgr = self.as_user('quanly').get(f'{API}/dashboard/daily')
+        self.assertEqual(r_mgr.status_code, 200)
+        self.assertIn('feed', r_mgr.data)
 
     def test_notifications_are_private(self):
         n = Notification.objects.create(user=self.users['letan'], kind='x', title='t')

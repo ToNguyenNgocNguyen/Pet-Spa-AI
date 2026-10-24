@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, App, Button, Descriptions, Drawer, Input, Popconfirm, Space, Table, Tag, Typography,
+  Alert, App, Button, Card, Descriptions, Drawer, Dropdown, Input, Modal,
+  Select, Space, Table, Tag, Tooltip, Typography,
 } from 'antd'
-import { CalendarOutlined, DeleteOutlined, EditOutlined, EyeOutlined, MedicineBoxOutlined, PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons'
+import {
+  CalendarOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
+  EyeOutlined, MedicineBoxOutlined, MoreOutlined, PlusOutlined,
+  ReloadOutlined, RobotOutlined, UserOutlined,
+} from '@ant-design/icons'
 import { Navigate, useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { api, unwrap } from '../api.js'
@@ -13,40 +18,78 @@ import PetFormModal, { COAT, SEX, SPECIES } from '../components/PetFormModal.jsx
 import VaccinationModal from '../components/VaccinationModal.jsx'
 import PetAvatar from '../components/PetAvatar.jsx'
 
+const { Title, Text, Paragraph } = Typography
+
 function age(months) {
   if (months == null) return '—'
   return months >= 12 ? `${Math.floor(months / 12)} tuổi ${months % 12} tháng` : `${months} tháng`
 }
-
 
 // Trang thú cưng dành riêng cho khách hàng. Nhân viên quản lý thú cưng ngay trong trang Khách hàng.
 export default function Pets() {
   const { message } = App.useApp()
   const nav = useNavigate()
   const { user } = useAuth()
-  const isCustomer = user.role === 'customer'
+  const isCustomer = user?.role === 'customer'
+
   const [data, setData] = useState({ results: [], count: 0 })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [searchInput, setSearchInput] = useState('')
   const [q, setQ] = useState('')
+  const [speciesFilter, setSpeciesFilter] = useState('all')
+  const [sizeFilter, setSizeFilter] = useState('all')
+  const [ordering, setOrdering] = useState('-created_at')
   const [loading, setLoading] = useState(true)
+
   const [tags, setTags] = useState([])
   const [editing, setEditing] = useState(null)
   const [detailPet, setDetailPet] = useState(null)
   const [vaccPet, setVaccPet] = useState(null)
   const [aiPet, setAiPet] = useState(null)
 
+  const hasFilter = Boolean(
+    q ||
+    (speciesFilter && speciesFilter !== 'all') ||
+    (sizeFilter && sizeFilter !== 'all') ||
+    ordering !== '-created_at'
+  )
+
+  const resetFilters = () => {
+    setSearchInput('')
+    setQ('')
+    setSpeciesFilter('all')
+    setSizeFilter('all')
+    setOrdering('-created_at')
+    setPage(1)
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setData(await api('/pets', { params: { page, page_size: pageSize, q } }))
+      const params = {
+        page,
+        page_size: pageSize,
+      }
+      if (q) params.q = q
+      if (speciesFilter && speciesFilter !== 'all') params.species = speciesFilter
+      if (sizeFilter && sizeFilter !== 'all') params.size_class = sizeFilter
+      if (ordering) params.ordering = ordering
+
+      const res = await api('/pets', { params })
+      setData(res)
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, q])
+  }, [page, pageSize, q, speciesFilter, sizeFilter, ordering])
 
-  useEffect(() => { if (isCustomer) load() }, [load, isCustomer])
-  useEffect(() => { api('/health-tags').then((t) => setTags(unwrap(t))) }, [])
+  useEffect(() => {
+    if (isCustomer) load()
+  }, [load, isCustomer])
+
+  useEffect(() => {
+    api('/health-tags').then((t) => setTags(unwrap(t))).catch(() => {})
+  }, [])
 
   if (!isCustomer) {
     const params = new URLSearchParams(window.location.search)
@@ -54,21 +97,52 @@ export default function Pets() {
   }
 
   const hide = async (id) => {
-    await api(`/pets/${id}`, { method: 'DELETE' })
-    message.success('Đã ẩn hồ sơ thú.')
-    load()
+    try {
+      await api(`/pets/${id}`, { method: 'DELETE' })
+      message.success('Đã ẩn hồ sơ bé cưng thành công!')
+      load()
+    } catch (e) {
+      message.error(e.message || 'Lỗi khi ẩn hồ sơ')
+    }
+  }
+
+  const confirmHidePet = (pet) => {
+    Modal.confirm({
+      title: 'Ẩn hồ sơ thú cưng?',
+      icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
+      content: (
+        <div>
+          <Paragraph style={{ marginBottom: 8 }}>
+            Bạn có chắc chắn muốn ẩn hồ sơ bé <b>"{pet.name}"</b> ({SPECIES[pet.species] || pet.species}) không?
+          </Paragraph>
+          <Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 0 }}>
+            Hồ sơ thú cưng sẽ được ẩn khỏi danh sách của bạn nhưng dữ liệu lịch sử các hóa đơn và cuộc hẹn trước đây vẫn được lưu trữ an toàn.
+          </Paragraph>
+        </div>
+      ),
+      okText: 'Ẩn hồ sơ',
+      okType: 'danger',
+      cancelText: 'Hủy',
+      centered: true,
+      onOk: () => hide(pet.id),
+    })
   }
 
   const tagMap = Object.fromEntries(tags.map((t) => [t.id, t]))
 
   const columns = [
     {
-      title: 'Tên',
-      dataIndex: 'name',
-      render: (v, r) => (
-        <Space align="center" size={8}>
-          <PetAvatar species={r.species} size={32} />
-          <b style={{ color: '#0b3d3f', fontSize: 14 }}>{v}</b>
+      title: 'Tên thú cưng',
+      key: 'name',
+      render: (_, r) => (
+        <Space align="center" size={12}>
+          <PetAvatar species={r.species} size={40} style={{ border: '2px solid #e2e8f0' }} />
+          <div>
+            <div style={{ color: '#0b3d3f', fontSize: 14, fontWeight: 700 }}>{r.name}</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              {SEX[r.sex] || r.sex} · {COAT[r.coat_type] || r.coat_type}
+            </div>
+          </div>
         </Space>
       ),
     },
@@ -81,7 +155,10 @@ export default function Pets() {
             render: (v) => (
               <a
                 style={{ color: '#0f8b8d', fontWeight: 600, cursor: 'pointer' }}
-                onClick={() => nav(`/app/khach-hang?q=${v}`)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  nav(`/app/khach-hang?q=${v}`)
+                }}
                 title="Bấm để xem hồ sơ chủ nuôi"
               >
                 👤 {v || '—'}
@@ -89,93 +166,328 @@ export default function Pets() {
             ),
           },
         ]),
-    { title: 'Loài / giống', key: 's', render: (_, r) => `${SPECIES[r.species]}${r.breed ? ` · ${r.breed}` : ''}` },
-    { title: 'Tuổi', dataIndex: 'age_months', render: age },
-    { title: 'Cân nặng', key: 'w', render: (_, r) => `${r.weight_kg} kg (${r.size_class || '—'})` },
     {
-      title: 'An toàn', key: 'h',
+      title: 'Loài & Giống',
+      key: 'species_breed',
+      render: (_, r) => {
+        const isDog = r.species === 'dog'
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={isDog ? 'blue' : 'orange'} style={{ borderRadius: 6, fontWeight: 600, fontSize: 12 }}>
+              {isDog ? '🐶 Chó' : '🐱 Mèo'}
+            </Tag>
+            <span style={{ fontSize: 13, color: '#334155', fontWeight: 500 }}>
+              {r.breed || 'Chưa rõ giống'}
+            </span>
+          </Space>
+        )
+      },
+    },
+    {
+      title: 'Tuổi',
+      key: 'age',
       render: (_, r) => (
-        <Space size={[4, 4]} wrap>
-          {r.health_tags.map((id) => <Tag color="orange" key={id}>{tagMap[id]?.name_vi || id}</Tag>)}
-          {r.vaccinations.length === 0 && <Tag color="red">Chưa có tiêm phòng</Tag>}
-        </Space>
+        <div>
+          <div style={{ fontWeight: 600, color: '#334155', fontSize: 13 }}>{age(r.age_months)}</div>
+          {r.birth_date && (
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>
+              Sinh: {dayjs(r.birth_date).format('DD/MM/YYYY')}
+            </div>
+          )}
+        </div>
       ),
     },
     {
-      title: 'Thao tác', key: 'a', width: 380,
+      title: 'Thể trạng',
+      key: 'weight_size',
       render: (_, r) => (
-        <Space wrap onClick={(e) => e.stopPropagation()}>
-          <Button
-            size="small"
-            type="primary"
-            icon={<CalendarOutlined />}
-            onClick={(e) => { e.stopPropagation(); nav(`/app/lich-hen?pet=${r.id}`) }}
-            style={{ background: '#0f8b8d', borderColor: '#0f8b8d' }}
-          >
-            Đặt lịch
-          </Button>
-          <Button
-            size="small"
-            type="primary"
-            ghost
-            icon={<RobotOutlined />}
-            onClick={(e) => { e.stopPropagation(); setAiPet(r) }}
-            style={{ borderColor: '#0f8b8d', color: '#0f8b8d' }}
-          >
-            AI Gợi ý gói
-          </Button>
-          <Button size="small" icon={<EyeOutlined />} onClick={(e) => { e.stopPropagation(); setDetailPet(r) }}>Chi tiết</Button>
-          <Button size="small" icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); setEditing(r) }}>Sửa</Button>
-          <Button size="small" icon={<MedicineBoxOutlined />} onClick={(e) => { e.stopPropagation(); setVaccPet(r) }}>Tiêm phòng</Button>
-          <Popconfirm title="Ẩn hồ sơ thú này?" okText="Ẩn" cancelText="Hủy" onConfirm={() => hide(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={(e) => e.stopPropagation()} />
-          </Popconfirm>
-        </Space>
+        <div>
+          <div style={{ fontWeight: 700, color: '#0f8b8d', fontSize: 14 }}>
+            {r.weight_kg} kg
+          </div>
+          <Tag color="cyan" style={{ fontSize: 11, borderRadius: 4, fontWeight: 700, marginTop: 2 }}>
+            Size {r.size_class || '—'}
+          </Tag>
+        </div>
       ),
+    },
+    {
+      title: 'Sức khỏe & Tiêm phòng',
+      key: 'health',
+      render: (_, r) => {
+        const hasVaccine = (r.vaccinations || []).length > 0
+        const hasAllergy = r.allergy_note && r.allergy_note !== 'Không'
+
+        return (
+          <Space direction="vertical" size={4}>
+            <Space size={[4, 4]} wrap>
+              {hasVaccine ? (
+                <Tag color="green" style={{ borderRadius: 4 }}>
+                  💉 Đã tiêm ({r.vaccinations.length} mũi)
+                </Tag>
+              ) : (
+                <Tag color="red" style={{ borderRadius: 4 }}>
+                  Chưa có tiêm phòng
+                </Tag>
+              )}
+              {hasAllergy && (
+                <Tooltip title={`Dị ứng: ${r.allergy_note}`}>
+                  <Tag color="error" style={{ borderRadius: 4 }}>
+                    ⚠️ Dị ứng
+                  </Tag>
+                </Tooltip>
+              )}
+            </Space>
+            {r.health_tags && r.health_tags.length > 0 && (
+              <Space size={[4, 4]} wrap>
+                {r.health_tags.map((id) => (
+                  <Tag color="orange" key={id} style={{ fontSize: 11, borderRadius: 4 }}>
+                    {tagMap[id]?.name_vi || id}
+                  </Tag>
+                ))}
+              </Space>
+            )}
+          </Space>
+        )
+      },
+    },
+    {
+      title: 'Thao tác',
+      key: 'actions',
+      width: 175,
+      render: (_, r) => {
+        const moreItems = [
+          {
+            key: 'detail',
+            label: 'Xem chi tiết bé cưng',
+            icon: <EyeOutlined style={{ color: '#0f8b8d' }} />,
+            onClick: () => setDetailPet(r),
+          },
+          {
+            key: 'ai-package',
+            label: 'AI gợi ý gói phù hợp',
+            icon: <RobotOutlined style={{ color: '#0f8b8d' }} />,
+            onClick: () => setAiPet(r),
+          },
+          {
+            key: 'vaccination',
+            label: 'Sổ tiêm phòng',
+            icon: <MedicineBoxOutlined style={{ color: '#0f8b8d' }} />,
+            onClick: () => setVaccPet(r),
+          },
+          {
+            type: 'divider',
+          },
+          {
+            key: 'delete',
+            label: 'Ẩn hồ sơ thú cưng',
+            icon: <DeleteOutlined />,
+            danger: true,
+            onClick: () => confirmHidePet(r),
+          },
+        ]
+
+        return (
+          <Space size={6} onClick={(e) => e.stopPropagation()}>
+            <Button
+              size="small"
+              type="primary"
+              icon={<CalendarOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                nav(`/app/lich-hen?pet=${r.id}`)
+              }}
+              style={{ background: '#0f8b8d', borderColor: '#0f8b8d', borderRadius: 6, fontWeight: 600 }}
+            >
+              Đặt lịch
+            </Button>
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation()
+                setEditing(r)
+              }}
+              style={{ borderRadius: 6 }}
+            >
+              Sửa
+            </Button>
+            <span onClick={(e) => e.stopPropagation()}>
+              <Dropdown
+                menu={{ items: moreItems }}
+                trigger={['click']}
+                placement="bottomRight"
+              >
+                <Button
+                  size="small"
+                  icon={<MoreOutlined />}
+                  style={{ borderRadius: 6, padding: '0 8px' }}
+                />
+              </Dropdown>
+            </span>
+          </Space>
+        )
+      },
     },
   ]
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">{isCustomer ? 'Thú cưng của tôi' : 'Hồ Sơ Thú Cưng'}</Typography.Title>
+      {/* Tiêu đề trang & Nút Thêm thú cưng */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <Space>
-          <Input.Search placeholder="Tìm theo tên thú hoặc chủ..." allowClear style={{ width: 320 }}
-            onSearch={(v) => { setPage(1); setQ(v) }} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing({})}>Thêm thú cưng</Button>
-        </Space>
-        <RowPerPageSelect value={pageSize} onChange={(ps) => { setPageSize(ps); setPage(1); }} />
+        <div>
+          <Title level={3} style={{ margin: 0, color: '#0b3d3f' }}>
+            {isCustomer ? 'Thú Cưng Của Tôi' : 'Hồ Sơ Thú Cưng'}
+          </Title>
+          <Text type="secondary">
+            {isCustomer
+              ? 'Quản lý thông tin các bé cưng, theo dõi thể trạng, lịch tiêm phòng và đặt lịch làm đẹp nhanh chóng'
+              : 'Quản lý danh sách thú cưng và tình trạng sức khỏe trên toàn hệ thống spa'}
+          </Text>
+        </div>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => setEditing({})}
+          style={{ background: '#0f8b8d', borderColor: '#0f8b8d', fontWeight: 600, height: 38, borderRadius: 8 }}
+        >
+          Thêm thú cưng
+        </Button>
       </div>
 
-      <Table
-        rowKey="id"
-        loading={loading}
-        dataSource={data.results}
-        columns={columns}
-        scroll={{ x: 'max-content' }}
-        rowClassName={() => 'clickable-row'}
-        onRow={(record) => ({
-          onClick: () => setDetailPet(record),
-          style: { cursor: 'pointer' },
-        })}
-        pagination={{
-          position: ['bottomRight'],
-          current: page,
-          total: data.count,
-          pageSize: pageSize,
-          showSizeChanger: false,
-          showTotal: (total, range) => `${range[0]}-${range[1]} / ${total} thú cưng`,
-          onChange: (p) => setPage(p),
+      {/* Toolbar: Tìm kiếm, Bộ lọc Loài, Size, Sắp xếp, Phân trang */}
+      <div
+        style={{
+          background: '#fff',
+          padding: '12px 16px',
+          borderRadius: 10,
+          border: '1px solid #e8f0f0',
+          marginBottom: 12,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 12,
         }}
-      />
+      >
+        <Space wrap size={10} style={{ flex: 1 }}>
+          <Input.Search
+            placeholder={isCustomer ? 'Tìm theo tên thú cưng, giống loài...' : 'Tìm theo tên thú, giống, chủ nuôi...'}
+            allowClear
+            value={searchInput}
+            onChange={(e) => {
+              setSearchInput(e.target.value)
+              if (!e.target.value && q) {
+                setPage(1)
+                setQ('')
+              }
+            }}
+            onSearch={(v) => {
+              setPage(1)
+              setQ(v ? v.trim() : '')
+            }}
+            style={{ width: 280 }}
+          />
 
+          <Select
+            placeholder="Loài thú cưng"
+            value={speciesFilter}
+            onChange={(val) => {
+              setSpeciesFilter(val)
+              setPage(1)
+            }}
+            style={{ width: 140 }}
+            options={[
+              { value: 'all', label: 'Tất cả loài' },
+              { value: 'dog', label: '🐶 Chó' },
+              { value: 'cat', label: '🐱 Mèo' },
+            ]}
+          />
+
+          <Select
+            placeholder="Kích cỡ size"
+            value={sizeFilter}
+            onChange={(val) => {
+              setSizeFilter(val)
+              setPage(1)
+            }}
+            style={{ width: 140 }}
+            options={[
+              { value: 'all', label: 'Tất cả size' },
+              { value: 'S', label: 'Size S (<5kg)' },
+              { value: 'M', label: 'Size M (5-10kg)' },
+              { value: 'L', label: 'Size L (10-20kg)' },
+              { value: 'XL', label: 'Size XL (>20kg)' },
+            ]}
+          />
+
+          <Select
+            value={ordering}
+            onChange={(val) => {
+              setOrdering(val)
+              setPage(1)
+            }}
+            style={{ width: 195 }}
+            options={[
+              { value: '-created_at', label: '🕒 Tạo mới nhất' },
+              { value: 'name', label: '🔤 Tên thú cưng (A-Z)' },
+              { value: '-weight_kg', label: '⚖️ Cân nặng giảm dần' },
+              { value: 'weight_kg', label: '⚖️ Cân nặng tăng dần' },
+            ]}
+          />
+
+          {hasFilter && (
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={resetFilters}
+            >
+              Đặt lại
+            </Button>
+          )}
+        </Space>
+
+        <Space size={12}>
+          <RowPerPageSelect value={pageSize} onChange={(ps) => { setPageSize(ps); setPage(1) }} />
+        </Space>
+      </div>
+
+      {/* Bảng danh sách thú cưng trong thẻ Card bo tròn cao cấp */}
+      <Card bodyStyle={{ padding: 0 }} style={{ borderRadius: 16, overflow: 'hidden' }}>
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={data.results}
+          columns={columns}
+          scroll={{ x: 'max-content' }}
+          rowClassName={() => 'clickable-row'}
+          onRow={(record) => ({
+            onClick: () => setDetailPet(record),
+            style: { cursor: 'pointer' },
+          })}
+          pagination={{
+            position: ['bottomRight'],
+            current: page,
+            total: data.count,
+            pageSize: pageSize,
+            showSizeChanger: false,
+            showTotal: (total, range) => `${range[0]}-${range[1]} / ${total} thú cưng`,
+            onChange: (p) => setPage(p),
+          }}
+        />
+      </Card>
+
+      {/* Drawer xem chi tiết hồ sơ thú cưng */}
       <Drawer
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <PetAvatar species={detailPet?.species} size={44} />
             <div>
               <Typography.Text strong style={{ fontSize: 16 }}>Hồ sơ bé cưng: {detailPet?.name}</Typography.Text>
-              <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>{SPECIES[detailPet?.species]} · {detailPet?.breed || 'Chưa rõ giống'}</Typography.Text></div>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {SPECIES[detailPet?.species]} · {detailPet?.breed || 'Chưa rõ giống'}
+                </Typography.Text>
+              </div>
             </div>
           </div>
         }
@@ -192,7 +504,7 @@ export default function Pets() {
                 setDetailPet(null)
                 nav(`/app/lich-hen?pet=${id}`)
               }}
-              style={{ background: '#0f8b8d', borderColor: '#0f8b8d' }}
+              style={{ background: '#0f8b8d', borderColor: '#0f8b8d', borderRadius: 6, fontWeight: 600 }}
             >
               Đặt lịch ngay
             </Button>
@@ -205,7 +517,7 @@ export default function Pets() {
                 setDetailPet(null)
                 setAiPet(p)
               }}
-              style={{ borderColor: '#0f8b8d', color: '#0f8b8d' }}
+              style={{ borderColor: '#0f8b8d', color: '#0f8b8d', borderRadius: 6 }}
             >
               AI Gợi ý
             </Button>
@@ -221,17 +533,19 @@ export default function Pets() {
                   <strong style={{ fontSize: 16, color: '#0f8b8d' }}>{detailPet.name}</strong>
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="Chủ nuôi" span={2}>
-                <Typography.Link onClick={() => { setDetailPet(null); nav(`/app/khach-hang?q=${detailPet.client_name}`) }}>
-                  <UserOutlined style={{ marginRight: 4 }} />{detailPet.client_name || 'Khách vãng lai'}
-                </Typography.Link>
-              </Descriptions.Item>
+              {!isCustomer && (
+                <Descriptions.Item label="Chủ nuôi" span={2}>
+                  <Typography.Link onClick={() => { setDetailPet(null); nav(`/app/khach-hang?q=${detailPet.client_name}`) }}>
+                    <UserOutlined style={{ marginRight: 4 }} />{detailPet.client_name || 'Khách vãng lai'}
+                  </Typography.Link>
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="Loài">{SPECIES[detailPet.species] || detailPet.species}</Descriptions.Item>
               <Descriptions.Item label="Giống loài">{detailPet.breed || 'Chưa rõ'}</Descriptions.Item>
               <Descriptions.Item label="Loại lông">{COAT[detailPet.coat_type] || detailPet.coat_type}</Descriptions.Item>
               <Descriptions.Item label="Giới tính">{SEX[detailPet.sex] || detailPet.sex}</Descriptions.Item>
               <Descriptions.Item label="Cân nặng">
-                <Tag color="cyan">{detailPet.weight_kg} kg</Tag>
+                <Tag color="cyan" style={{ fontWeight: 700 }}>{detailPet.weight_kg} kg</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="Kích thước size">
                 <Tag color="blue" style={{ fontWeight: 700 }}>Size {detailPet.size_class || '—'}</Tag>
@@ -248,7 +562,7 @@ export default function Pets() {
                 )}
               </Descriptions.Item>
               {detailPet.safety_note && (
-                <Descriptions.Item label="Lưu ý an toàn nội bộ" span={2}>
+                <Descriptions.Item label="Lưu ý an toàn" span={2}>
                   <Alert type="warning" message={detailPet.safety_note} style={{ padding: '4px 10px' }} />
                 </Descriptions.Item>
               )}

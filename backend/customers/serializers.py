@@ -115,8 +115,6 @@ class PetSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'size_class']
         extra_kwargs = {
             'client': {'required': False},
-            'breed': {'required': True, 'allow_blank': False},
-            'birth_date': {'required': True, 'allow_null': False},
         }
 
     def get_fields(self):
@@ -150,13 +148,9 @@ class PetSerializer(serializers.ModelSerializer):
         return value
 
     def validate_breed(self, value):
-        if not value or not str(value).strip():
-            raise serializers.ValidationError('Vui lòng chọn hoặc nhập giống thú cưng.')
-        return str(value).strip()
+        return str(value).strip() if value else ''
 
     def validate_birth_date(self, value):
-        if not value:
-            raise serializers.ValidationError('Vui lòng chọn ngày sinh của thú cưng.')
-        if value > date.today():
+        if value and value > date.today():
             raise serializers.ValidationError('Ngày sinh không được ở tương lai.')
         return value

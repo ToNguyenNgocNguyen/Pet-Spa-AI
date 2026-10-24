@@ -11,6 +11,7 @@ import {
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import { api, toFormErrors } from '../api.js'
+import Logo from '../components/Logo.jsx'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -72,6 +73,10 @@ export default function Login() {
   const [countdown, setCountdown] = useState(0)
   const [forgotBusy, setForgotBusy] = useState(false)
   const [forgotError, setForgotError] = useState('')
+
+  useEffect(() => {
+    document.title = 'Đăng Nhập / Đăng Ký | Pet Spa AI'
+  }, [])
 
   const [forgotPhoneForm] = Form.useForm()
   const [forgotOtpForm] = Form.useForm()
@@ -471,9 +476,8 @@ export default function Login() {
         {/* ===== CỘT TRÁI: GIỚI THIỆU THƯƠNG HIỆU & GIÁ TRỊ ===== */}
         <div className="auth-brand-side">
           <div className="auth-brand-header">
-            <div className="auth-brand-logo">
-              <div className="logo-icon">🐾</div>
-              <div className="logo-text">Pet Spa AI</div>
+            <div style={{ marginBottom: 20 }}>
+              <Logo size={46} theme="light" subtitle="Smart Veterinary Grooming" />
             </div>
 
             <h1 className="auth-brand-title">
