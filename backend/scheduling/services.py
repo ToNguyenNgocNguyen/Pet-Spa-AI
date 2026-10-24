@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from accounts.errors import Conflict
 from accounts.models import Role, User
@@ -295,6 +295,93 @@ def cancel(booking, user, reason='', code=''):
         _notify_client(booking, 'booking_cancelled', 'Lịch hẹn đã bị hủy')
     else:
         notify(_front_desk_users(), 'booking_cancelled', 'Khách đã hủy lịch hẹn',
+               f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    return booking
+
+
+@transaction.atomic
+def update_booking(booking, user, pet=None, package_id=None, service_ids=None, start_at=None,
+                   staff_id=None, note=None, customer_note=None):
+    """Sửa thông tin hoặc dời lịch hẹn. Chỉ cho phép khi PENDING hoặc CONFIRMED."""
+    Spa.objects.select_for_update().get(pk=1)
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    cur = BookingStatus(booking.status)
+    if cur not in (BookingStatus.PENDING, BookingStatus.CONFIRMED):
+        raise Conflict('invalid_transition', f'Không thể sửa lịch ở trạng thái "{cur.label}".')
+
+    is_customer = user.role == Role.CUSTOMER
+    if is_customer:
+        if booking.client.user_id != user.id:
+            raise PermissionDenied()
+        cutoff = timedelta(hours=Spa.get().cancel_cutoff_hours)
+        if cur == BookingStatus.CONFIRMED and booking.start_at - timezone.now() < cutoff:
+            raise Conflict('update_too_late',
+                           f'Chỉ tự dời lịch trước giờ hẹn tối thiểu {Spa.get().cancel_cutoff_hours} giờ. '
+                           'Vui lòng liên hệ spa.')
+
+    new_pet = pet if pet else booking.pet
+    new_start_at = start_at if start_at else booking.start_at
+    if is_customer and new_start_at <= timezone.now():
+        raise ValidationError({'start_at': 'Giờ hẹn phải ở tương lai.'})
+
+    new_staff = _get_staff(staff_id) if (staff_id is not None and not is_customer) else (
+        booking.staff if staff_id is None else None
+    )
+
+    has_package = package_id is not None
+    has_services = service_ids is not None
+
+    if has_package or has_services:
+        pkg_id = package_id if has_package else (booking.package_id if not has_services else None)
+        svc_ids = service_ids if has_services else (None if has_package else [i.service_id for i in booking.items.all()])
+        package, items, total, end_at = build_items(new_pet, pkg_id, svc_ids, new_start_at)
+        items_payload = [dict(service=i['service'], start_at=i['start_at'], end_at=i['end_at'],
+                              resource_type=i['resource_type']) for i in items]
+        check_slot(Spa.get(), new_pet, items_payload, new_start_at, end_at, new_staff, exclude_id=booking.pk)
+
+        booking.package = package
+        booking.total_price = total
+        booking.start_at = new_start_at
+        booking.end_at = end_at
+        booking.items.all().delete()
+        BookingItem.objects.bulk_create([BookingItem(booking=booking, **i) for i in items])
+    elif new_start_at != booking.start_at:
+        cursor = new_start_at
+        items_payload = []
+        existing_items = list(booking.items.select_related('service').order_by('position'))
+        for it in existing_items:
+            dur = timedelta(minutes=it.service.duration_minutes)
+            it_end = cursor + dur
+            items_payload.append(dict(service=it.service, position=it.position, start_at=cursor, end_at=it_end,
+                                      resource_type=it.resource_type, unit_price=it.unit_price))
+            cursor = it_end
+        check_slot(Spa.get(), new_pet, items_payload, new_start_at, cursor, new_staff, exclude_id=booking.pk)
+
+        booking.start_at = new_start_at
+        booking.end_at = cursor
+        for it, data in zip(existing_items, items_payload):
+            it.start_at = data['start_at']
+            it.end_at = data['end_at']
+            it.save(update_fields=['start_at', 'end_at'])
+    else:
+        items_payload = [dict(service=i.service, start_at=i.start_at, end_at=i.end_at, resource_type=i.resource_type)
+                         for i in booking.items.select_related('service')]
+        check_slot(Spa.get(), new_pet, items_payload, booking.start_at, booking.end_at, new_staff, exclude_id=booking.pk)
+
+    booking.pet = new_pet
+    booking.staff = new_staff
+    if note is not None and not is_customer:
+        booking.note_internal = note
+    if customer_note is not None:
+        booking.customer_note = customer_note
+    booking.save()
+
+    _log(booking, cur, cur, user, reason='Cập nhật thông tin lịch hẹn')
+    if is_customer:
+        notify(_front_desk_users(), 'booking_updated', 'Khách đã dời/cập nhật lịch hẹn',
+               f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
+    elif booking.client.user_id:
+        notify([booking.client.user], 'booking_updated', 'Lịch hẹn của bạn đã được cập nhật',
                f'{booking.pet.name} - {timezone.localtime(booking.start_at):%d/%m %H:%M}', 'booking', booking.pk)
     return booking
 

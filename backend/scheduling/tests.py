@@ -13,6 +13,8 @@ from notifications.models import Notification
 from scheduling.models import Booking
 from spa.models import StaffProfile
 
+from . import services
+
 API = '/api/v1'
 
 
@@ -163,11 +165,47 @@ class BookingFlowTests(BaseCase):
         self.assertEqual(r.status_code, 409)
         self.assertEqual(r.data['code'], 'cancel_too_late')
 
+    def test_update_booking_reschedule_success(self):
+        b = self._book('khach1', days=5, hour=9).data['id']
+        # Dời sang 14h cùng ngày
+        new_time = at(5, 14)
+        r = self.as_user('khach1').patch(f'{API}/bookings/{b}', {'start_at': new_time}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data['id'], b)
+        b_obj = Booking.objects.get(pk=b)
+        self.assertEqual(timezone.localtime(b_obj.start_at).hour, 14)
+
+    def test_update_booking_cannot_edit_completed(self):
+        b = Booking.objects.filter(status='completed').first()
+        r = self.as_user('letan').patch(f'{API}/bookings/{b.pk}', {'start_at': at(10, 10)}, format='json')
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data['code'], 'invalid_transition')
+
+    def test_update_booking_permission_denied_for_other_customer(self):
+        from rest_framework.exceptions import PermissionDenied
+        other_user = User.objects.create_user('khach2', 'khach2@example.com', 'Demo@12345', role='customer')
+        b_id = self._book('khach1', days=6, hour=9).data['id']
+        b = Booking.objects.get(pk=b_id)
+        with self.assertRaises(PermissionDenied):
+            services.update_booking(b, other_user, start_at=timezone.now() + timedelta(days=6))
+
     def test_cancelled_frees_slot(self):
         b = self._book('letan', services=('cat_spa',), pet=Pet.objects.get(name='Mimi')).data['id']
         self.as_user('letan').post(f'{API}/bookings/{b}/cancel', dict(reason='Khách đổi ý'), format='json')
         r = self._book('letan', services=('cat_spa',), pet=Pet.objects.get(name='Sữa'))
         self.assertEqual(r.status_code, 201, r.data)
+
+    def test_reject_pending_booking(self):
+        b = self._book('khach1', days=7, hour=9).data['id']
+        r = self.as_user('letan').post(f'{API}/bookings/{b}/reject', dict(reason='Hết chỗ đột xuất'), format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data['status'], 'cancelled')
+        self.assertEqual(r.data['cancel_reason_code'], 'rejected')
+
+    def test_calendar_endpoint(self):
+        r = self.as_user('letan').get(f'{API}/bookings/calendar?from={date.today().isoformat()}&to={(date.today() + timedelta(days=30)).isoformat()}')
+        self.assertEqual(r.status_code, 200)
+        self.assertIsInstance(r.data, list)
 
 
 class RoleScopeTests(BaseCase):

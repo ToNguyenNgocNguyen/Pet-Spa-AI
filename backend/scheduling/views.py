@@ -105,6 +105,17 @@ class BookingInputSerializer(serializers.Serializer):
     customer_note = serializers.CharField(required=False, allow_blank=True, default='')
     channel = serializers.ChoiceField(choices=['counter', 'walk_in'], required=False)
     confirm = serializers.BooleanField(required=False, default=True)
+    exclude_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class BookingUpdateSerializer(serializers.Serializer):
+    pet = serializers.PrimaryKeyRelatedField(queryset=Pet.objects.select_related('client'), required=False)
+    package = serializers.IntegerField(required=False, allow_null=True)
+    services = serializers.ListField(child=serializers.IntegerField(), required=False)
+    start_at = serializers.DateTimeField(required=False)
+    staff = serializers.IntegerField(required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True)
+    customer_note = serializers.CharField(required=False, allow_blank=True)
 
 
 class CancelSerializer(serializers.Serializer):
@@ -163,7 +174,7 @@ class BookingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         d = s.validated_data
         pet = _pet_for(request.user, d['pet'])
         staff = d.get('staff') if request.user.role != Role.CUSTOMER else None
-        return Response(services.quote(pet, d.get('package'), d.get('services'), d['start_at'], staff))
+        return Response(services.quote(pet, d.get('package'), d.get('services'), d['start_at'], staff, exclude_id=d.get('exclude_id')))
 
     @action(detail=False, methods=['get'], url_path='availability')
     def availability(self, request):
@@ -193,6 +204,32 @@ class BookingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
             d['note'], d['customer_note'], d.get('channel'), d['confirm'])
         return Response(self._out(b, request), status=status.HTTP_201_CREATED)
 
+    def update(self, request, pk=None):
+        return self.partial_update(request, pk)
+
+    def partial_update(self, request, pk=None):
+        if request.user.role == Role.TECHNICIAN:
+            raise PermissionDenied()
+        booking = self.get_object()
+        s = BookingUpdateSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        pet = None
+        if 'pet' in d:
+            pet = _pet_for(request.user, d['pet'])
+        b = services.update_booking(
+            booking=booking,
+            user=request.user,
+            pet=pet,
+            package_id=d.get('package'),
+            service_ids=d.get('services'),
+            start_at=d.get('start_at'),
+            staff_id=d.get('staff'),
+            note=d.get('note'),
+            customer_note=d.get('customer_note'),
+        )
+        return Response(self._out(b, request))
+
     def _out(self, booking, request):
         booking = self.get_queryset().get(pk=booking.pk) if request.user.role != Role.TECHNICIAN else \
             Booking.objects.get(pk=booking.pk)
@@ -206,6 +243,26 @@ class BookingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
     def confirm(self, request, pk=None):
         self._front_desk_only(request)
         return Response(self._out(services.confirm(self.get_object(), request.user), request))
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        self._front_desk_only(request)
+        s = CancelSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        b = services.cancel(self.get_object(), request.user, s.validated_data['reason'], code='rejected')
+        return Response(self._out(b, request))
+
+    @action(detail=False, methods=['get'])
+    def calendar(self, request):
+        p = request.query_params
+        d_from = parse_date(p.get('from') or p.get('date_from', ''))
+        d_to = parse_date(p.get('to') or p.get('date_to', ''))
+        qs = self.get_queryset()
+        if d_from:
+            qs = qs.filter(start_at__gte=_day_start(d_from))
+        if d_to:
+            qs = qs.filter(start_at__lt=_day_start(d_to + timedelta(days=1)))
+        return Response([self._out(b, request) for b in qs])
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
