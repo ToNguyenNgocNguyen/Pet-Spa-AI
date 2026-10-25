@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import {
   BankOutlined, BarChartOutlined, BellOutlined, CalendarOutlined, CheckOutlined, DashboardOutlined,
-  DollarOutlined, GlobalOutlined, HistoryOutlined, IdcardOutlined,
+  DesktopOutlined, DollarOutlined, GlobalOutlined, HistoryOutlined, IdcardOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, RobotOutlined, ShopOutlined, TeamOutlined,
   ToolOutlined, UserOutlined,
 } from '@ant-design/icons'
@@ -21,6 +21,7 @@ const { Text } = Typography
 
 const ROUTE_ICONS = {
   '/app/tong-quan': <DashboardOutlined />,
+  '/app/bang-le-tan': <DesktopOutlined />,
   '/app/thong-ke': <BarChartOutlined />,
   '/app/lich-hen': <CalendarOutlined />,
   '/app/hoa-don': <DollarOutlined />,
@@ -39,7 +40,7 @@ const NAV_GROUPS = [
   {
     key: 'operations',
     label: 'Vận hành & Đặt lịch',
-    paths: ['/app/tong-quan', '/app/thong-ke', '/app/lich-hen', '/app/hoa-don'],
+    paths: ['/app/tong-quan', '/app/bang-le-tan', '/app/thong-ke', '/app/lich-hen', '/app/hoa-don'],
   },
   {
     key: 'crm',

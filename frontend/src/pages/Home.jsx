@@ -4,7 +4,7 @@ import {
   Progress, Row, Skeleton, Space, Statistic, Tag, Typography, message,
 } from 'antd'
 import {
-  CalendarOutlined, CheckCircleFilled, ClockCircleOutlined, DollarOutlined,
+  CalendarOutlined, CheckCircleFilled, ClockCircleOutlined, DesktopOutlined, DollarOutlined,
   ExclamationCircleFilled, PlusOutlined, ReloadOutlined, RightOutlined,
   ThunderboltFilled, UserOutlined, WarningFilled,
 } from '@ant-design/icons'
@@ -70,8 +70,18 @@ export default function Home() {
           <h2>Xin chào, {user?.full_name || user?.username}! 👋</h2>
           <p>{spa.name} — {spa.address}</p>
         </div>
-        <Space>
+        <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={loadData}>Cập nhật số liệu</Button>
+          {isFrontDesk && (
+            <Button
+              type="primary"
+              icon={<DesktopOutlined />}
+              onClick={() => nav('/app/bang-le-tan')}
+              style={{ background: '#0f8b8d', borderColor: '#0f8b8d' }}
+            >
+              Bảng Lễ Tân Điều Phối
+            </Button>
+          )}
           <Button type="default" icon={<CalendarOutlined />} onClick={() => nav('/app/lich-hen')}>
             {isCustomer ? 'Đặt lịch chăm sóc' : 'Quản lý lịch hẹn'}
           </Button>

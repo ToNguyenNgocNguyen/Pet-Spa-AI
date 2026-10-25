@@ -6,7 +6,7 @@ import {
 } from 'antd'
 import {
   CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  CloseCircleOutlined, DollarOutlined, EditOutlined, PlayCircleOutlined,
+  CloseCircleOutlined, DesktopOutlined, DollarOutlined, EditOutlined, PlayCircleOutlined,
   PlusOutlined, ReloadOutlined, RobotOutlined, TableOutlined, UserOutlined, WarningOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -583,6 +583,17 @@ export default function Bookings() {
           />
 
           <Button icon={<ReloadOutlined />} onClick={loadBookings}>Làm mới</Button>
+
+          {isFrontDesk && (
+            <Button
+              type="primary"
+              ghost
+              icon={<DesktopOutlined />}
+              onClick={() => nav('/app/bang-le-tan')}
+            >
+              Bảng Lễ Tân Điều Phối
+            </Button>
+          )}
 
           {!isTech && (
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
