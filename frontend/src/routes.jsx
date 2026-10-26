@@ -11,11 +11,13 @@ import RebookReminders from './pages/RebookReminders.jsx'
 import AiAdmin from './pages/AiAdmin.jsx'
 import Analytics from './pages/Analytics.jsx'
 import ReceptionDesk from './pages/ReceptionDesk.jsx'
+import WalkInQueue from './pages/WalkInQueue.jsx'
 
 // Danh sách route trong khu vực ứng dụng nội bộ (/app)
 export const APP_ROUTES = [
   { path: '/app/tong-quan', label: 'Tổng quan', element: <Home />, roles: null, public: true },
   { path: '/app/bang-le-tan', label: 'Bảng lễ tân (Điều phối)', element: <ReceptionDesk />, roles: ['receptionist', 'manager'] },
+  { path: '/app/hang-doi-walk-in', label: 'Hàng đợi vãng lai', element: <WalkInQueue />, roles: ['receptionist', 'manager'] },
   { path: '/app/thong-ke', label: 'Thống kê hoạt động', element: <Analytics />, roles: ['receptionist', 'manager'] },
   { path: '/app/lich-hen', label: 'Lịch hẹn', element: <Bookings />, roles: null, public: true },
   { path: '/app/hoa-don', label: 'Hóa đơn & Thu ngân', element: <Invoices />, roles: ['customer', 'receptionist', 'manager'] },

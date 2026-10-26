@@ -12,10 +12,14 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from accounts.errors import Conflict
 from accounts.models import Role, User
 from catalog.models import Package, PackagePrice, Service, ServicePrice
+from customers.models import Client, Pet
 from notifications.models import notify
 from spa.models import Resource, Spa, StaffProfile, TimeOff
 
-from .models import ACTIVE_STATUSES, Booking, BookingItem, BookingStatus, BookingStatusLog
+from .models import (
+    ACTIVE_STATUSES, Booking, BookingItem, BookingStatus, BookingStatusLog,
+    WalkInStatus, WalkInTicket,
+)
 
 # Bảng chuyển trạng thái hợp lệ (Từ -> các Đến)
 TRANSITIONS = {
@@ -420,7 +424,15 @@ def check_in(booking, user, assignments=None):
             ).values_list('resource_id', flat=True)
         free = Resource.objects.filter(resource_type=item.resource_type, is_active=True).exclude(pk__in=busy_ids)
         wanted = assignments.get(item.pk)
-        res = free.filter(pk=wanted).first() if wanted else free.first()
+        if wanted:
+            res = free.filter(pk=wanted).first()
+            if not res:
+                wanted_obj = Resource.objects.filter(pk=wanted).first()
+                if wanted_obj and wanted_obj.pk in busy_ids:
+                    raise Conflict('resource_busy', f'Vị trí "{wanted_obj.name}" hiện đang có thú cưng sử dụng.')
+                raise Conflict('invalid_resource', 'Vị trí được chọn không phù hợp với dịch vụ này.')
+        else:
+            res = free.first()
         if not res:
             raise Conflict('no_resource', f'Không còn tài nguyên trống cho "{item.service.name}".')
         item.resource = res
@@ -467,3 +479,160 @@ def check_out(booking, user):
     booking.save(update_fields=['checked_out_at', 'updated_at'])
     _log(booking, BookingStatus.COMPLETED, BookingStatus.COMPLETED, user, 'Trả thú')
     return booking
+
+
+# ==============================================================================
+# HÀNG ĐỢI TIẾP NHẬN KHÁCH VÃNG LAI (WALK-IN QUEUE - SPA-18)
+# ==============================================================================
+
+def create_walk_in(contact_name, phone='', pet_name='', pet_species='dog', service=None, package=None, client=None, pet=None, note=''):
+    """Lấy số thứ tự hàng đợi khách vãng lai (SPA-18)."""
+    today = timezone.localdate()
+    # Tự động gán Client và Pet nếu tìm thấy
+    if phone and not client:
+        client = Client.objects.filter(phone=phone).first()
+    if client and not pet and pet_name:
+        pet = Pet.objects.filter(client=client, name__iexact=pet_name).first()
+
+    # Tính queue_no tăng dần trong ngày
+    with transaction.atomic():
+        last_ticket = WalkInTicket.objects.select_for_update().filter(date=today).order_by('-queue_no').first()
+        queue_no = (last_ticket.queue_no + 1) if last_ticket else 1
+
+        # Tính thời gian chờ ước tính
+        waiting_count = WalkInTicket.objects.filter(date=today, status__in=[WalkInStatus.WAITING, WalkInStatus.CALLED]).count()
+        duration = 30
+        if service:
+            duration = service.duration_minutes
+        elif package:
+            duration = sum(i.service.duration_minutes for i in package.items.all())
+
+        active_res = Resource.objects.filter(is_active=True).count() or 1
+        estimated = max(5, int((waiting_count * duration) / max(1, (active_res // 2))))
+
+        ticket = WalkInTicket.objects.create(
+            date=today,
+            queue_no=queue_no,
+            client=client,
+            contact_name=contact_name or (client.full_name if client else 'Khách vãng lai'),
+            phone=phone or (client.phone if client else ''),
+            pet=pet,
+            pet_name=pet_name or (pet.name if pet else 'Bé cưng'),
+            pet_species=pet_species or (pet.species if pet else 'dog'),
+            service=service,
+            package=package,
+            status=WalkInStatus.WAITING,
+            estimated_wait_minutes=estimated,
+            note=note,
+        )
+    return ticket
+
+
+def call_walk_in(ticket, user):
+    """Lễ tân gọi số thứ tự tiếp theo (SPA-18)."""
+    if ticket.status == WalkInStatus.SERVED:
+        raise Conflict('invalid_transition', 'Phiếu này đã được tiếp nhận.')
+    if ticket.status == WalkInStatus.LEFT:
+        raise Conflict('invalid_transition', 'Khách đã hủy phiếu hoặc rời đi.')
+    ticket.status = WalkInStatus.CALLED
+    ticket.called_at = timezone.now()
+    ticket.save(update_fields=['status', 'called_at', 'updated_at'])
+    return ticket
+
+
+@transaction.atomic
+def convert_walk_in(ticket, user, staff_id=None, assignments=None):
+    """Chuyển đổi phiếu walk-in thành Booking và tiếp nhận vào bàn (SPA-18)."""
+    ticket = WalkInTicket.objects.select_for_update().get(pk=ticket.pk)
+    if ticket.status == WalkInStatus.SERVED:
+        raise Conflict('invalid_transition', 'Phiếu này đã được tiếp nhận.')
+    if ticket.status == WalkInStatus.LEFT:
+        raise Conflict('invalid_transition', 'Khách đã hủy phiếu hoặc rời đi.')
+
+    # 1. Đảm bảo có Client
+    client = ticket.client
+    if not client:
+        if ticket.phone:
+            client = Client.objects.filter(phone=ticket.phone).first()
+        if not client:
+            client = Client.objects.create(
+                full_name=ticket.contact_name or 'Khách vãng lai',
+                phone=ticket.phone or f'W{ticket.pk:04d}',
+                source=Client.Source.WALK_IN,
+                is_active=True,
+            )
+
+    # 2. Đảm bảo có Pet
+    pet = ticket.pet
+    if not pet:
+        if client:
+            pet = Pet.objects.filter(client=client, name__iexact=ticket.pet_name).first()
+        if not pet:
+            pet = Pet.objects.create(
+                client=client,
+                name=ticket.pet_name or 'Bé cưng',
+                species=ticket.pet_species or 'dog',
+                weight_kg=Decimal('5.0'),
+                coat_type='short',
+                is_active=True,
+            )
+
+    # 3. Xác định dịch vụ/gói
+    pkg_id = ticket.package_id
+    svc_ids = [ticket.service_id] if ticket.service_id else None
+    if not pkg_id and not svc_ids:
+        first_svc = Service.objects.filter(is_active=True).first()
+        if first_svc:
+            svc_ids = [first_svc.pk]
+
+    start_at = timezone.now()
+
+    # 4. Tạo Booking
+    booking = create_booking(
+        user=user,
+        pet=pet,
+        package_id=pkg_id,
+        service_ids=svc_ids,
+        start_at=start_at,
+        staff_id=staff_id,
+        note=ticket.note,
+        customer_note=f'Phiếu Walk-in #{ticket.queue_no:02d}',
+        channel=Booking.Channel.WALK_IN,
+        confirm=True,
+    )
+
+    # 5. Nếu có yêu cầu gán bàn hoặc check-in ngay
+    if assignments is not None:
+        real_assignments = {}
+        items_list = list(booking.items.all().order_by('pk'))
+        for k, res_id in assignments.items():
+            if k in [it.pk for it in items_list]:
+                real_assignments[k] = res_id
+            elif 1 <= k <= len(items_list):
+                real_assignments[items_list[k - 1].pk] = res_id
+            elif len(items_list) == 1:
+                real_assignments[items_list[0].pk] = res_id
+        booking = check_in(booking, user, assignments=real_assignments)
+
+    # 6. Cập nhật phiếu walk-in
+    ticket.status = WalkInStatus.SERVED
+    ticket.served_at = timezone.now()
+    ticket.booking = booking
+    ticket.client = client
+    ticket.pet = pet
+    ticket.save(update_fields=['status', 'served_at', 'booking', 'client', 'pet', 'updated_at'])
+
+    return ticket, booking
+
+
+def leave_walk_in(ticket, user, reason=''):
+    """Đánh dấu khách rời đi / hủy chờ (SPA-18)."""
+    if ticket.status == WalkInStatus.SERVED:
+        raise Conflict('invalid_transition', 'Phiếu này đã được tiếp nhận, không thể đánh dấu rời đi.')
+    ticket.status = WalkInStatus.LEFT
+    ticket.left_at = timezone.now()
+    if reason:
+        ticket.note = (ticket.note + f' [Rời đi: {reason}]').strip()
+    ticket.save(update_fields=['status', 'left_at', 'note', 'updated_at'])
+    return ticket
+

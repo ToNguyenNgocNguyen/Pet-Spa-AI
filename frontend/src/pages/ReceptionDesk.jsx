@@ -8,7 +8,7 @@ import {
   DesktopOutlined, CheckCircleOutlined, PlayCircleOutlined, LogoutOutlined,
   ClockCircleOutlined, UserOutlined, PhoneOutlined, AlertOutlined,
   DollarOutlined, ReloadOutlined, PlusOutlined, EyeOutlined,
-  AppstoreOutlined, SwapOutlined, ToolOutlined, ShopOutlined
+  AppstoreOutlined, SwapOutlined, ToolOutlined, ShopOutlined, QrcodeOutlined
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +37,7 @@ export default function ReceptionDesk() {
   const [bookings, setBookings] = useState([])
   const [occupancyData, setOccupancyData] = useState(null)
   const [showResourceGrid, setShowResourceGrid] = useState(true)
+  const [walkInSummary, setWalkInSummary] = useState(null)
 
   // Modal Check-in (gán tài nguyên)
   const [checkInModalOpen, setCheckInModalOpen] = useState(false)
@@ -53,12 +54,14 @@ export default function ReceptionDesk() {
     setLoading(true)
     const dateStr = selectedDate.format('YYYY-MM-DD')
     try {
-      const [bksRes, occRes] = await Promise.all([
+      const [bksRes, occRes, walkInRes] = await Promise.all([
         api(`/bookings?date=${dateStr}`),
         api(`/resources/occupancy?date=${dateStr}`),
+        api(`/walk-ins?date=${dateStr}`).catch(() => null),
       ])
       setBookings(unwrap(bksRes) || [])
       setOccupancyData(occRes || null)
+      setWalkInSummary(walkInRes?.summary || null)
     } catch (e) {
       message.error(e.message || 'Không thể tải dữ liệu bảng lễ tân')
     } finally {
@@ -241,6 +244,16 @@ export default function ReceptionDesk() {
           </Button>
 
           <Button
+            icon={<QrcodeOutlined />}
+            onClick={() => nav('/app/hang-doi-walk-in')}
+            style={{ color: '#0f8b8d', borderColor: '#0f8b8d' }}
+          >
+            Hàng đợi vãng lai {walkInSummary?.waiting > 0 && (
+              <Badge count={walkInSummary.waiting} style={{ marginLeft: 6, backgroundColor: '#f59e0b' }} />
+            )}
+          </Button>
+
+          <Button
             type="primary"
             icon={<PlusOutlined />}
             style={{ background: '#0f8b8d', borderColor: '#0f8b8d' }}
@@ -250,6 +263,33 @@ export default function ReceptionDesk() {
           </Button>
         </Space>
       </div>
+
+      {/* Cảnh báo khách vãng lai đang chờ tại sảnh (SPA-18) */}
+      {walkInSummary?.waiting > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<QrcodeOutlined />}
+          style={{ marginBottom: 16, borderRadius: 12 }}
+          message={
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <span>
+                📢 <strong>Hàng đợi vãng lai:</strong> Đang có <strong>{walkInSummary.waiting}</strong> khách chờ tại sảnh
+                {walkInSummary.next_waiting && ` (Số tiếp theo: #${String(walkInSummary.next_waiting).padStart(2, '0')})`}
+                . Ước tính chờ ~{walkInSummary.average_wait_minutes} phút.
+              </span>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => nav('/app/hang-doi-walk-in')}
+                style={{ background: '#d97706', borderColor: '#d97706' }}
+              >
+                Mở hàng đợi gọi số
+              </Button>
+            </div>
+          }
+        />
+      )}
 
       {/* ===== CÁC THẺ THỐNG KÊ NHANH ===== */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
