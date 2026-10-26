@@ -12,6 +12,7 @@ import AiAdmin from './pages/AiAdmin.jsx'
 import Analytics from './pages/Analytics.jsx'
 import ReceptionDesk from './pages/ReceptionDesk.jsx'
 import WalkInQueue from './pages/WalkInQueue.jsx'
+import Notifications from './pages/Notifications.jsx'
 
 // Danh sách route trong khu vực ứng dụng nội bộ (/app)
 export const APP_ROUTES = [
@@ -22,13 +23,15 @@ export const APP_ROUTES = [
   { path: '/app/lich-hen', label: 'Lịch hẹn', element: <Bookings />, roles: null, public: true },
   { path: '/app/hoa-don', label: 'Hóa đơn & Thu ngân', element: <Invoices />, roles: ['customer', 'receptionist', 'manager'] },
   { path: '/app/nhac-tai-spa', label: 'Nhắc tái spa (AI)', element: <RebookReminders />, roles: ['customer', 'receptionist', 'manager'] },
-  { path: '/app/thu-cung', label: 'Thú cưng', element: <Pets />, roles: ['customer', 'receptionist', 'manager'] },
+  // Nhân viên quản lý thú cưng trong trang Khách hàng; route này chỉ còn hiện ở menu của khách (nhân viên được chuyển hướng)
+  { path: '/app/thu-cung', label: 'Thú cưng', element: <Pets />, roles: ['customer', 'receptionist', 'manager'], hideInMenuFor: ['receptionist', 'manager'] },
   { path: '/app/khach-hang', label: 'Khách hàng', element: <Clients />, roles: ['receptionist', 'manager'] },
   { path: '/app/dich-vu', label: 'Dịch vụ & Giá', element: <Catalog />, roles: null, public: true },
   { path: '/app/nhan-su', label: 'Nhân sự & Cơ sở', element: <StaffManagement />, roles: ['receptionist', 'manager'] },
   { path: '/app/quan-tri-ai', label: 'Quản trị AI & SOP', element: <AiAdmin />, roles: ['manager'] },
   { path: '/app/ho-so-spa', label: 'Hồ sơ spa', element: <SpaProfile />, roles: ['manager'] },
   { path: '/app/tai-khoan', label: 'Tài khoản', element: <Account />, roles: null, public: true },
+  { path: '/app/thong-bao', label: 'Thông báo', element: <Notifications />, roles: null, public: true, hideInMenuFor: ['customer', 'receptionist', 'manager', 'technician'] },
 ]
 
 export const labelFor = (route, user) => {
